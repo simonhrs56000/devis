@@ -50,7 +50,13 @@ function libere(btn){
    traitement lourd (la fabrication du PDF fige l'écran pendant ~1 s). */
 function peindre(){
   return new Promise(function(res){
-    requestAnimationFrame(function(){ requestAnimationFrame(function(){ setTimeout(res, 0); }); });
+    var fait = false;
+    function suite(){ if(!fait){ fait = true; res(); } }
+    // cas normal : on attend deux images, l'état « en cours » est alors affiché
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ setTimeout(suite, 0); }); });
+    // secours : écran en arrière-plan, plus aucune image n'est dessinée et
+    // l'enregistrement resterait suspendu — le minuteur, lui, continue de tourner
+    setTimeout(suite, 150);
   });
 }
 function ls(k,v){ try{ if(v===undefined) return localStorage.getItem(k);
