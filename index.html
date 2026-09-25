@@ -108,6 +108,21 @@
   .hide{display:none!important}
   .mini{font-size:12px;color:var(--mut);margin-top:6px;line-height:1.45}
   a{color:var(--acc)}
+  /* champ code : masqué par défaut, avec l'œil pour vérifier la saisie */
+  .pw{position:relative}
+  .pw input{padding-right:50px}
+  .pw button{position:absolute;right:3px;top:3px;bottom:3px;background:none;border:0;
+             padding:0 11px;color:var(--mut);display:flex;align-items:center;border-radius:8px}
+  .pw button:active{transform:scale(.9);background:#eef1f5}
+  /* choix professionnel / particulier */
+  .choix{display:block;width:100%;text-align:left;background:#fff;border:1.5px solid var(--line);
+         border-radius:12px;padding:15px;margin-bottom:10px}
+  .choix b{display:block;font-size:16.5px;color:var(--txt)}
+  .choix span{display:block;font-size:12.5px;color:var(--mut);margin-top:3px;line-height:1.4}
+  .choix:active{transform:scale(.98);background:#f2f6fb}
+  .choix.on{border-color:var(--acc);background:#EAF2FB;box-shadow:inset 0 0 0 1px var(--acc)}
+  .choix.on b{color:var(--acc-d)}
+  .choix.on b::after{content:' ✓';color:var(--acc)}
 </style>
 </head>
 <body>
@@ -136,30 +151,62 @@
     <button class="btn" style="margin-top:12px" onclick="chargerConfig(true, this)">Télécharger le catalogue</button>
   </section>
 
-  <!-- ÉTAPE 1 : COMMERCIAL -->
-  <section id="e1" class="card hide">
-    <h2>Qui établit le devis ?</h2>
+  <!-- CONNEXION — écran à part : il disparaît de la chaîne une fois la connexion faite -->
+  <section id="eCo" class="card hide">
+    <h2>Qui établit les devis ?</h2>
     <label>Commercial</label>
     <select id="fCommercial"></select>
     <label>Code personnel</label>
-    <input id="fCode" type="text" inputmode="text" autocomplete="off" autocapitalize="off"
-           autocorrect="off" spellcheck="false" placeholder="ex. Br3!zh">
-    <div class="mini">Au moins 4 caractères, dont un chiffre et un caractère spécial
-      (! ? * # &amp; - _ …). Retenu sur cet appareil : à saisir une seule fois.</div>
+    <div class="pw">
+      <input id="fCode" type="password" inputmode="text" autocomplete="current-password"
+             autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="••••••"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();verifierCommercial(document.getElementById('bCo'));}">
+      <button type="button" id="bOeil" onclick="basculerCode()" aria-label="Afficher le code">
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M1.8 12S5.4 5.4 12 5.4 22.2 12 22.2 12 18.6 18.6 12 18.6 1.8 12 1.8 12Z"/>
+          <circle cx="12" cy="12" r="3.1"/>
+          <line id="oeilBarre" class="hide" x1="3.6" y1="20.4" x2="20.4" y2="3.6"/>
+        </svg>
+      </button>
+    </div>
+    <div class="mini">Au moins 4 caractères, dont un chiffre et un caractère spécial (! ? * # &amp; - _ …).</div>
+    <button class="btn" style="margin-top:16px" id="bCo" onclick="verifierCommercial(this)">Se connecter</button>
+    <div class="mini">Le code est retenu sur cet appareil : à saisir une seule fois.</div>
+  </section>
+
+  <!-- ÉTAPE 1 : TYPE DE CLIENT -->
+  <section id="e1" class="card hide">
+    <h2>Pour qui est ce devis ?</h2>
+    <button class="choix" id="chPRO" onclick="choisirType('PRO')">
+      <b>Professionnel</b>
+      <span>Entreprise, commerce, syndic, copropriété, collectivité. SIRET et n° de TVA demandés.</span>
+    </button>
+    <button class="choix" id="chPART" onclick="choisirType('PART')">
+      <b>Particulier</b>
+      <span>Chez lui, à son domicile.</span>
+    </button>
   </section>
 
   <!-- ÉTAPE 2 : CLIENT -->
   <section id="e2" class="card hide">
-    <h2>Client</h2>
-    <label>Société / Copropriété</label>
-    <input id="cSociete" autocomplete="organization">
-    <label>Interlocuteur</label>
+    <h2 id="tClient">Client</h2>
+    <div id="blocPro">
+      <label>Raison sociale</label>
+      <input id="cSociete" autocomplete="organization">
+      <label>SIRET</label>
+      <input id="cSiret" inputmode="numeric" placeholder="14 chiffres" onblur="deduireTva()">
+      <label>N° de TVA intracommunautaire</label>
+      <input id="cTva" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="FR…">
+      <div class="mini" id="mSiret">Le n° de TVA se complète tout seul à partir du SIRET.</div>
+    </div>
+    <label id="lContact">Interlocuteur</label>
     <input id="cContact" autocomplete="name">
     <div class="row">
       <div><label>Téléphone</label><input id="cTel" type="tel" inputmode="tel"></div>
       <div><label>E-mail</label><input id="cEmail" type="email" inputmode="email" autocapitalize="off"></div>
     </div>
-    <label>Adresse du site à nettoyer</label>
+    <label id="lAdresse">Adresse du site à nettoyer</label>
     <input id="cAdresse">
     <div class="row">
       <div style="max-width:130px"><label>Code postal</label><input id="cCp" inputmode="numeric"></div>
@@ -239,7 +286,9 @@
     <button class="btn" onclick="nouveauDevis()">Nouveau devis</button>
     <div class="mini" style="text-align:center;margin-top:14px">
       Catalogue mis à jour le <span id="majCat">—</span> ·
-      <a href="#" onclick="chargerConfig(true);return false;">actualiser</a>
+      <a href="#" onclick="chargerConfig(true);return false;">actualiser</a><br>
+      Connecté : <b id="quiSuisJe">—</b> ·
+      <a href="#" onclick="deconnexion();return false;">changer de commercial</a>
     </div>
   </section>
 </main>
@@ -274,11 +323,11 @@
   <div class="dlg-b" id="dlgB"></div>
 </dialog>
 
-<script src="config.js?v=8"></script>
-<script src="jspdf.umd.min.js?v=8"></script>
-<script src="police.js?v=8"></script>
-<script src="logo.js?v=8"></script>
-<script src="pdf.js?v=8"></script>
-<script src="app.js?v=8"></script>
+<script src="config.js?v=9"></script>
+<script src="jspdf.umd.min.js?v=9"></script>
+<script src="police.js?v=9"></script>
+<script src="logo.js?v=9"></script>
+<script src="pdf.js?v=9"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

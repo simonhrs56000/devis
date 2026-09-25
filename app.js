@@ -6,6 +6,7 @@
 var CFG = null;            // {reglages, catalogue, commerciaux, sel, maj}
 var LIGNES = [];
 var ETAPE = 1;
+var TYPE = null;           // 'PRO' ou 'PART' — choisi au début de chaque devis
 var DERNIER = null;        // dernier devis enregistré (pour le partage)
 var EN_COURS = false;
 var APPAREIL = null;
@@ -114,8 +115,8 @@ window.addEventListener('load', function(){
     // premier lancement : on montre l'écran d'accueil tout de suite,
     // pour ne jamais laisser l'écran vide pendant le téléchargement
     $('hSub').textContent = navigator.onLine ? 'Première installation' : 'Hors connexion';
-    $('steps').classList.add('hide'); $('bar').classList.add('hide');
-    montrer(0);
+    $('steps').classList.add('hide'); $('bar').classList.add('hide'); $('bHist').classList.add('hide');
+    montrer('e0');
     if(navigator.onLine) chargerConfig(true);
   }
 
@@ -128,17 +129,58 @@ function demarrer(){
   $('hSub').textContent = (CFG.reglages && CFG.reglages.societe_nom) || 'Devis sur place';
   var s = $('fCommercial');
   s.innerHTML = CFG.commerciaux.map(function(c){ return '<option>'+ech(c.nom)+'</option>'; }).join('');
+
   var moi = lsj('moi');
-  if(moi && CFG.commerciaux.some(function(c){ return c.nom===moi.nom; })){
-    s.value = moi.nom; $('fCode').value = moi.code;
-  } else if(moi){
+  if(moi && !CFG.commerciaux.some(function(c){ return c.nom===moi.nom; })){
     lsj('moi', null); moi = null;   // ce commercial n'existe plus dans le classeur
   }
-  var b = lsj('brouillon');
-  if(b && b.lignes && b.lignes.length && confirm('Un devis non terminé a été retrouvé. Le reprendre ?')) restaurer(b);
-  etape(moi ? 2 : 1);
+
+  if(!moi){
+    ecranConnexion('');
+  } else {
+    s.value = moi.nom;
+    $('quiSuisJe').textContent = moi.nom;
+    var b = lsj('brouillon');
+    if(b && b.lignes && b.lignes.length && confirm('Un devis non terminé a été retrouvé. Le reprendre ?')){
+      restaurer(b); etape(2);
+    } else {
+      TYPE = null; majType(); etape(1);
+    }
+  }
   etatReseau();
   synchroniser(false);
+}
+
+/* ====================== CONNEXION ======================
+   Écran séparé : une fois le commercial reconnu, il sort du parcours.
+   On n'y revient que volontairement, par « changer de commercial ». */
+function ecranConnexion(msg){
+  ETAPE = 0;
+  montrer('eCo');
+  $('steps').classList.add('hide');
+  $('bar').classList.add('hide');
+  $('bHist').classList.add('hide');
+  $('hTitre').textContent = 'Connexion';
+  $('fCode').value = '';
+  if($('fCode').type === 'text') basculerCode();   // on ne laisse jamais un code affiché
+  erreur(msg || '');
+  window.scrollTo(0,0);
+}
+
+/* L'œil : vérifier ce qu'on tape sur un petit clavier, sans laisser le code en clair. */
+function basculerCode(){
+  var i = $('fCode'), b = $('bOeil');
+  var montre = (i.type === 'password');
+  i.type = montre ? 'text' : 'password';
+  $('oeilBarre').classList.toggle('hide', !montre);
+  b.setAttribute('aria-label', montre ? 'Masquer le code' : 'Afficher le code');
+  vibrer(6);
+}
+
+function deconnexion(){
+  if(!confirm('Se déconnecter ? Les devis déjà enregistrés restent sur l\'appareil.')) return;
+  lsj('moi', null);
+  ecranConnexion('');
 }
 
 /* Le bureau a changé la liste des commerciaux, un code ou les tarifs pendant
@@ -165,11 +207,9 @@ function appliquerNouvelleConfig(){
 }
 
 function reidentifier(raison){
-  lsj('moi', null);
-  $('fCode').value = '';
   if(ETAPE >= 3) return;          // devis en cours : on ne coupe rien, ce sera au prochain
-  etape(1);
-  erreur(raison + ' Choisis ton nom et saisis ton code.');
+  lsj('moi', null);
+  ecranConnexion(raison + ' Choisis ton nom et saisis ton code.');
 }
 
 /* ====================== CONFIG (catalogue, tarifs) ====================== */
@@ -209,27 +249,40 @@ function chargerConfig(bloquant, btn){
 }
 
 /* ====================== NAVIGATION ====================== */
-function montrer(n){
-  [0,1,2,3,4,5,6].forEach(function(i){ $('e'+i).classList.toggle('hide', i!==n); });
+var ECRANS = ['e0','eCo','e1','e2','e3','e4','e5','e6'];
+function montrer(id){
+  ECRANS.forEach(function(k){ $(k).classList.toggle('hide', k!==id); });
 }
 function etape(n){
   if(n<1) n=1;
   ETAPE=n; erreur('');
-  montrer(n);
+  montrer('e'+n);
   [1,2,3,4].forEach(function(i){ $('s'+i).classList.toggle('on', i<=n); });
   $('steps').classList.toggle('hide', n>=5);
-  $('bar').classList.toggle('hide', n>=5);
-  $('bPrec').classList.toggle('hide', n<=1);
+  $('bar').classList.toggle('hide', n>=5 || n===1);   // au choix du type, les deux cartes suffisent
+  $('bHist').classList.remove('hide');
+  $('bPrec').classList.toggle('hide', n<=1);          // plus de retour vers la connexion
   $('bSuiv').textContent = n===4 ? 'Enregistrer le devis' : 'Continuer';
-  $('hTitre').textContent = ['','Identification','Client','Prestations','Validation','Terminé','Mes devis'][n];
+  $('hTitre').textContent = ['','Type de client','Client','Prestations','Validation','Terminé','Mes devis'][n];
+  if(n===1) majType();
+  if(n<=2) majBarre();          // le total du bas suit le devis en cours, pas le précédent
   if(n===3) rendreLignes();
   if(n===4){ calculer(); majApercuSignature(); }
   window.scrollTo(0,0);
 }
 function suivant(){
-  if(ETAPE===1) return verifierCommercial();
+  if(ETAPE===1){
+    if(!TYPE) return erreur('Choisis le type de client.');
+    return etape(2);
+  }
   if(ETAPE===2){
-    if(!val('cSociete') && !val('cContact')) return erreur('Indique au moins la société ou le nom du client.');
+    if(TYPE==='PRO'){
+      if(!val('cSociete')) return erreur('Indique la raison sociale du client.');
+      var s = val('cSiret').replace(/\D/g,'');
+      if(s && s.length !== 14) return erreur('Un SIRET compte 14 chiffres — laisse le champ vide si tu ne l\'as pas.');
+    } else {
+      if(!val('cContact')) return erreur('Indique le nom du client.');
+    }
     sauverBrouillon(); return etape(3);
   }
   if(ETAPE===3){
@@ -252,7 +305,7 @@ function codeConforme(c){
   return String(c).length >= 4 && /[0-9]/.test(c) && /[^A-Za-z0-9]/.test(c);
 }
 
-function verifierCommercial(){
+function verifierCommercial(btn){
   var nom = val('fCommercial'), code = val('fCode');
   if(!nom) return erreur('Choisis ton nom dans la liste.');
   if(!code) return erreur('Saisis ton code.');
@@ -261,11 +314,55 @@ function verifierCommercial(){
   var c = null;
   CFG.commerciaux.forEach(function(x){ if(x.nom===nom) c=x; });
   if(!c) return erreur('Commercial inconnu.');
+  if(btn) occuper(btn, 'Vérification…');
   sha256(nom+'|'+code+'|'+(CFG.sel||'')).then(function(h){
+    if(btn) libere(btn);
     if(c.empreinte && h && h !== c.empreinte) return erreur('Code incorrect.');
     lsj('moi', {nom:nom, code:code});
-    etape(2);
+    $('quiSuisJe').textContent = nom;
+    $('fCode').value = '';                           // le code ne traîne pas à l'écran
+    if($('fCode').type === 'text') basculerCode();
+    TYPE = null; majType();
+    etape(1);
   });
+}
+
+/* ====================== TYPE DE CLIENT ====================== */
+function choisirType(t){
+  TYPE = t;
+  majType();
+  sauverBrouillon();
+  etape(2);
+}
+function majType(){
+  var pro = (TYPE === 'PRO');
+  $('chPRO').classList.toggle('on', pro);
+  $('chPART').classList.toggle('on', TYPE === 'PART');
+  $('blocPro').classList.toggle('hide', !pro);
+  $('lContact').textContent = pro ? 'Interlocuteur' : 'Nom et prénom du client';
+  $('lAdresse').textContent = pro ? 'Adresse du site à nettoyer' : 'Adresse du logement';
+  $('tClient').textContent = pro ? 'Client professionnel' : (TYPE ? 'Client particulier' : 'Client');
+  if(TYPE === 'PART'){ $('cSociete').value=''; $('cSiret').value=''; $('cTva').value=''; }
+}
+
+/* N° de TVA intracommunautaire français : FR + clé sur 2 chiffres + les 9 chiffres du SIREN.
+   Clé = (12 + 3 × (SIREN modulo 97)) modulo 97. */
+function tvaDepuisSiren(siren){
+  if(!/^\d{9}$/.test(siren)) return '';
+  var k = (12 + 3 * (Number(siren) % 97)) % 97;
+  return 'FR' + ('0'+k).slice(-2) + siren;
+}
+function deduireTva(){
+  var brut = val('cSiret').replace(/\D/g,''), m = $('mSiret');
+  if(!brut){ m.textContent = 'Le n° de TVA se complète tout seul à partir du SIRET.'; return; }
+  if(brut.length !== 14){
+    m.textContent = 'Un SIRET compte 14 chiffres — celui-ci en a ' + brut.length + '.';
+    return;
+  }
+  $('cSiret').value = brut.slice(0,3)+' '+brut.slice(3,6)+' '+brut.slice(6,9)+' '+brut.slice(9);
+  m.textContent = 'SIRET complet.';
+  if(!val('cTva')) $('cTva').value = tvaDepuisSiren(brut.slice(0,9));
+  sauverBrouillon();
 }
 
 /* ====================== CATALOGUE ====================== */
@@ -439,7 +536,12 @@ function effacerSignature(){
 
 /* ====================== BROUILLON ====================== */
 function lireClient(){
-  return {societe:val('cSociete'),contact:val('cContact'),tel:val('cTel'),email:val('cEmail'),
+  var pro = (TYPE === 'PRO');
+  return {type: TYPE || 'PRO',
+          societe: pro ? val('cSociete') : '',
+          siret:   pro ? val('cSiret')   : '',
+          tva:     pro ? val('cTva')     : '',
+          contact:val('cContact'),tel:val('cTel'),email:val('cEmail'),
           adresse:val('cAdresse'),cp:val('cCp'),ville:val('cVille')};
 }
 function sauverBrouillon(){
@@ -448,7 +550,9 @@ function sauverBrouillon(){
 function restaurer(b){
   LIGNES = b.lignes||[];
   var c = b.client||{};
-  ['Societe','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
+  TYPE = (c.type === 'PART') ? 'PART' : 'PRO';
+  majType();
+  ['Societe','Siret','Tva','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
     $('c'+k).value = c[k.toLowerCase()]||''; });
   $('fRemise').value = b.remise||0;
   $('fNotes').value = b.notes||'';
@@ -485,7 +589,8 @@ function enregistrer(){
   if(EN_COURS) return;
   if(ETAPE !== 4) return;                       // on n'enregistre que depuis l'écran de validation
   if(!LIGNES.length) return erreur('Ajoute au moins une prestation.');
-  if(!val('cSociete') && !val('cContact')) return erreur('Indique au moins la société ou le nom du client.');
+  if(TYPE === 'PRO' && !val('cSociete')) return erreur('Indique la raison sociale du client.');
+  if(TYPE !== 'PRO' && !val('cContact')) return erreur('Indique le nom du client.');
   var envoi = $('fEnvoi').checked;
   if(envoi && !val('cEmail')) return erreur('Pas d\'e-mail client : décoche l\'envoi ou renseigne l\'adresse.');
   var moi = lsj('moi');
@@ -542,7 +647,7 @@ function enregistrerSuite(b, envoi, moi, secours){
         ? 'Envoi au bureau en cours…'
         : 'Hors connexion : le devis part automatiquement dès que le réseau revient.';
       debloquer(b, secours);
-      montrer(5); $('steps').classList.add('hide'); $('bar').classList.add('hide');
+      montrer('e5'); $('steps').classList.add('hide'); $('bar').classList.add('hide');
       $('hTitre').textContent='Terminé'; window.scrollTo(0,0);
       synchroniser(false);
     }, function(e){
@@ -661,9 +766,11 @@ function majEtatDernier(){
 
 /* ====================== HISTORIQUE ====================== */
 function ouvrirHistorique(){
-  ETAPE=6; montrer(6);
+  ETAPE=6; montrer('e6');
   $('steps').classList.add('hide'); $('bar').classList.add('hide');
   $('hTitre').textContent='Mes devis';
+  var moi = lsj('moi');
+  $('quiSuisJe').textContent = (moi && moi.nom) || '—';
   var m=$('majCat'); if(m && CFG && CFG.maj) m.textContent = new Date(CFG.maj).toLocaleDateString('fr-FR');
   rendreHistorique(); window.scrollTo(0,0);
 }
@@ -701,13 +808,15 @@ function renvoyer(id, btn){
 function nouveauDevis(){
   debloquer($('bSuiv'));
   LIGNES = [];
-  ['cSociete','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes']
+  ['cSociete','cSiret','cTva','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes']
     .forEach(function(id){ $(id).value=''; });
   $('fRemise').value = 0;
   $('fEnvoi').checked = false;
+  $('mSiret').textContent = 'Le n° de TVA se complète tout seul à partir du SIRET.';
   effacerSignature();
   lsj('brouillon', null);
   DERNIER = null;
+  TYPE = null;
   $('steps').classList.remove('hide');
-  etape(2);
+  etape(1);
 }

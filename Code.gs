@@ -27,6 +27,7 @@ function onOpen() {
     .addItem('3. Vérifier les codes des commerciaux', 'verifierCodes')
     .addItem('4. Proposer un code conforme', 'proposerCode')
     .addItem('5. Tester (devis fictif)', 'testerDevis')
+    .addItem('6. Mettre à jour la structure du fichier', 'majStructure')
     .addToUi();
 }
 
@@ -89,12 +90,7 @@ function initialiser() {
   creerOnglet_(ss, SH.REGLAGES, ['CLE', 'VALEUR', 'COMMENTAIRE']);
   creerOnglet_(ss, SH.CATALOGUE, ['CATEGORIE', 'DESIGNATION', 'DETAIL', 'UNITE', 'PU_HT', 'TVA', 'TYPE', 'ACTIF']);
   creerOnglet_(ss, SH.COMMERCIAUX, ['NOM', 'EMAIL', 'CODE', 'ACTIF']);
-  creerOnglet_(ss, SH.DEVIS, [
-    'NUMERO', 'DATE', 'COMMERCIAL', 'CLIENT', 'CONTACT', 'TELEPHONE', 'EMAIL',
-    'ADRESSE', 'CP', 'VILLE', 'TOTAL_HT_PONCTUEL', 'TOTAL_HT_MENSUEL', 'TOTAL_HT',
-    'TOTAL_TVA', 'TOTAL_TTC', 'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE',
-    'VALIDITE', 'LIEN_PDF', 'NOTES', 'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS'
-  ]);
+  creerOnglet_(ss, SH.DEVIS, ENTETES_DEVIS_);
   creerOnglet_(ss, SH.LIGNES, [
     'NUMERO', 'ORDRE', 'CATEGORIE', 'DESIGNATION', 'DETAIL', 'QTE', 'UNITE',
     'PU_HT', 'TYPE', 'TVA', 'TOTAL_HT'
@@ -138,6 +134,46 @@ function creerOnglet_(ss, nom, entetes) {
   return sh;
 }
 
+var ENTETES_DEVIS_ = [
+  'NUMERO', 'DATE', 'COMMERCIAL', 'CLIENT', 'TYPE_CLIENT', 'SIRET_CLIENT', 'TVA_CLIENT',
+  'CONTACT', 'TELEPHONE', 'EMAIL', 'ADRESSE', 'CP', 'VILLE',
+  'TOTAL_HT_PONCTUEL', 'TOTAL_HT_MENSUEL', 'TOTAL_HT', 'TOTAL_TVA', 'TOTAL_TTC',
+  'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE', 'VALIDITE', 'LIEN_PDF', 'NOTES',
+  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS'
+];
+
+/**
+ * Ajoute ce qui manque à un fichier déjà en service, sans toucher aux données :
+ * les colonnes client professionnel, et les réglages apparus après coup.
+ * Appelée automatiquement à chaque devis reçu — elle ne fait rien si tout est là.
+ */
+function majStructure() {
+  majStructure_();
+  SpreadsheetApp.getUi().alert('Structure à jour.');
+}
+
+function majStructure_() {
+  var ss = SpreadsheetApp.getActive();
+  var shD = ss.getSheetByName(SH.DEVIS);
+  if (shD && shD.getLastColumn() > 0) {
+    var en = shD.getRange(1, 1, 1, shD.getLastColumn()).getValues()[0]
+      .map(function (x) { return String(x).trim(); });
+    if (en.indexOf('TYPE_CLIENT') < 0) {
+      var apres = en.indexOf('CLIENT') >= 0 ? en.indexOf('CLIENT') + 1 : shD.getLastColumn();
+      shD.insertColumnsAfter(apres, 3);
+      shD.getRange(1, apres + 1, 1, 3)
+        .setValues([['TYPE_CLIENT', 'SIRET_CLIENT', 'TVA_CLIENT']])
+        .setFontWeight('bold').setBackground('#1f2937').setFontColor('#ffffff');
+    }
+  }
+  var reg = lireReglages_(), shR = ss.getSheetByName(SH.REGLAGES);
+  if (shR) {
+    REGLAGES_DEFAUT_.forEach(function (r) {
+      if (!(r[0] in reg)) shR.appendRow(r);
+    });
+  }
+}
+
 var REGLAGES_DEFAUT_ = [
   ['societe_nom', 'MA SOCIETE DE NETTOYAGE', 'Nom imprimé en haut du devis'],
   ['societe_forme', 'SARL au capital de 0 €', 'Forme juridique + capital'],
@@ -152,6 +188,7 @@ var REGLAGES_DEFAUT_ = [
   ['validite_jours', '30', 'Durée de validité du devis en jours'],
   ['conditions_reglement', 'Paiement à 30 jours à réception de facture. Pénalités de retard : 3 fois le taux d\'intérêt légal. Indemnité forfaitaire de recouvrement : 40 €.', 'Bas de devis'],
   ['mentions_bas', 'Devis gratuit. Il doit être retourné daté et signé avec la mention « Bon pour accord ».', 'Bas de devis'],
+  ['mentions_particulier', 'Contrat conclu hors établissement : le client particulier dispose d\'un délai de rétractation de 14 jours à compter de la signature (art. L221-18 du Code de la consommation), sans motif ni pénalité. À faire valider par votre conseil.', 'Imprimé uniquement sur les devis aux particuliers'],
   ['prefixe_devis', 'DEV', 'Numéro : DEV-2026-KL-0001 (KL = initiales du commercial)'],
   ['dossier_racine_id', '', 'Dossier Drive racine — rempli automatiquement'],
   ['email_copie', '', 'Adresse qui reçoit une copie de chaque devis'],
@@ -251,15 +288,23 @@ function enregistrer_(d, com) {
   var shD = ss.getSheetByName(SH.DEVIS);
   var renumerote = '';
 
+  majStructure_();      // colonnes client professionnel ajoutées si le fichier est antérieur
+
+  // On repère les colonnes par leur nom : le fichier peut évoluer sans casser le code.
+  var en = shD.getRange(1, 1, 1, shD.getLastColumn()).getValues()[0]
+    .map(function (x) { return String(x).trim(); });
+  var col = {};
+  en.forEach(function (h, i) { if (h) col[h] = i; });
+
   if (shD.getLastRow() > 1) {
-    var lignes = shD.getRange(2, 1, shD.getLastRow() - 1, 24).getValues();
+    var lignes = shD.getRange(2, 1, shD.getLastRow() - 1, en.length).getValues();
 
     // 1. déjà reçu ? on compare l'identifiant unique du devis, pas son numéro
     //    (un téléphone réinstallé peut réémettre le même numéro pour un autre devis)
     for (var i = 0; i < lignes.length; i++) {
-      if (d.id && String(lignes[i][23]) === String(d.id)) {
-        return { ok: true, doublon: true, numero: String(lignes[i][0]),
-                 pdfUrl: String(lignes[i][20] || '') };
+      if (d.id && col.ID_DEVIS != null && String(lignes[i][col.ID_DEVIS]) === String(d.id)) {
+        return { ok: true, doublon: true, numero: String(lignes[i][col.NUMERO]),
+                 pdfUrl: String(lignes[i][col.LIEN_PDF] || '') };
       }
     }
 
@@ -289,15 +334,24 @@ function enregistrer_(d, com) {
   }
 
   var c = devis.client || {}, t = devis.totaux || {};
-  shD.appendRow([
-    devis.numero, new Date(devis.date), devis.commercial, c.societe || '', c.contact || '',
-    c.tel || '', c.email || '', c.adresse || '', c.cp || '', c.ville || '',
-    t.htPonctuel || 0, t.htMensuel || 0, t.ht || 0, t.tva || 0, t.ttc || 0, devis.remise || 0,
-    devis.signature ? 'SIGNE' : 'EN ATTENTE', devis.signature ? 'OUI' : 'NON',
-    devis.signataire || '', new Date(devis.validite), lienPdf,
-    (devis.notes || '') + (renumerote ? ' [numéro d\'origine sur le PDF du client : ' + renumerote + ']' : ''),
-    new Date(), d.appareil || '', d.id || ''
-  ]);
+  var v = {
+    NUMERO: devis.numero, DATE: new Date(devis.date), COMMERCIAL: devis.commercial,
+    CLIENT: c.societe || c.contact || '',
+    TYPE_CLIENT: String(c.type || '').toUpperCase() === 'PART' ? 'PARTICULIER' : 'PROFESSIONNEL',
+    SIRET_CLIENT: c.siret || '', TVA_CLIENT: c.tva || '',
+    CONTACT: c.contact || '', TELEPHONE: c.tel || '', EMAIL: c.email || '',
+    ADRESSE: c.adresse || '', CP: c.cp || '', VILLE: c.ville || '',
+    TOTAL_HT_PONCTUEL: t.htPonctuel || 0, TOTAL_HT_MENSUEL: t.htMensuel || 0,
+    TOTAL_HT: t.ht || 0, TOTAL_TVA: t.tva || 0, TOTAL_TTC: t.ttc || 0,
+    REMISE_PCT: devis.remise || 0,
+    STATUT: devis.signature ? 'SIGNE' : 'EN ATTENTE',
+    SIGNE: devis.signature ? 'OUI' : 'NON',
+    SIGNATAIRE: devis.signataire || '', VALIDITE: new Date(devis.validite), LIEN_PDF: lienPdf,
+    NOTES: (devis.notes || '') +
+      (renumerote ? ' [numéro d\'origine sur le PDF du client : ' + renumerote + ']' : ''),
+    RECU_LE: new Date(), ID_APPAREIL: d.appareil || '', ID_DEVIS: d.id || ''
+  };
+  shD.appendRow(en.map(function (h) { return v.hasOwnProperty(h) ? v[h] : ''; }));
 
   var shL = ss.getSheetByName(SH.LIGNES);
   var rows = (devis.lignes || []).map(function (l, idx) {
@@ -446,7 +500,8 @@ function testerDevis() {
     devis: {
       numero: 'TEST-' + new Date().getTime(), date: new Date(), validite: new Date(Date.now() + 30 * 864e5),
       commercial: com.nom,
-      client: { societe: 'TEST SARL', contact: 'Jean Test', tel: '0600000000', email: '', adresse: '2 rue du Test', cp: '56000', ville: 'Vannes' },
+      client: { type: 'PRO', societe: 'TEST SARL', siret: '000 000 000 00000', tva: 'FR00000000000',
+                contact: 'Jean Test', tel: '0600000000', email: '', adresse: '2 rue du Test', cp: '56000', ville: 'Vannes' },
       lignes: [{ categorie: 'Bureaux', designation: 'Nettoyage de bureaux', detail: '3 passages/semaine', qte: 120, unite: 'm²/mois', pu: 1.2, tva: 20, type: 'MENSUEL' }],
       remise: 0, notes: 'Devis de test', signature: '', signataire: '',
       totaux: { htPonctuel: 0, htMensuel: 144, ht: 144, tva: 28.8, ttc: 172.8 }

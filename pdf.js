@@ -75,12 +75,16 @@ var PDF = (function () {
     var c = devis.client || {};
     var xC = 112, wC = R - xC;
     var lignesC = [];
+    // La première ligne est mise en gras : raison sociale pour un professionnel,
+    // nom du client pour un particulier.
     if (txt(c.societe).trim()) lignesC.push({ t: txt(c.societe), b: true });
-    if (txt(c.contact).trim()) lignesC.push({ t: txt(c.contact) });
+    if (txt(c.contact).trim()) lignesC.push({ t: txt(c.contact), b: !txt(c.societe).trim() });
     if (txt(c.adresse).trim()) lignesC.push({ t: txt(c.adresse) });
     if ((txt(c.cp) + txt(c.ville)).trim()) lignesC.push({ t: (txt(c.cp) + ' ' + txt(c.ville)).trim() });
     if (txt(c.tel).trim()) lignesC.push({ t: 'Tél. ' + txt(c.tel) });
     if (txt(c.email).trim()) lignesC.push({ t: txt(c.email) });
+    if (txt(c.siret).trim()) lignesC.push({ t: 'SIRET ' + txt(c.siret) });
+    if (txt(c.tva).trim()) lignesC.push({ t: 'TVA ' + txt(c.tva) });
 
     var yC = y + 2;          // le cadre client vit dans la colonne de droite,
                               // il n'a pas à descendre sous le bloc société
@@ -216,7 +220,12 @@ var PDF = (function () {
       txt(reg.societe_siret).trim() ? 'SIRET ' + txt(reg.societe_siret) : '',
       txt(reg.societe_tva).trim() ? 'TVA ' + txt(reg.societe_tva) : '',
       txt(reg.societe_rcs)].filter(function (x) { return x.trim(); }).join(' — ');
-    var pied = [txt(reg.mentions_bas), txt(reg.conditions_reglement), idSoc]
+    // Un devis signé au domicile d'un particulier relève du démarchage :
+    // la mention du droit de rétractation se règle dans l'onglet REGLAGES.
+    var particulier = String(c.type || '').toUpperCase() === 'PART';
+    var pied = [txt(reg.mentions_bas),
+                particulier ? txt(reg.mentions_particulier) : '',
+                txt(reg.conditions_reglement), idSoc]
       .filter(function (x) { return x.trim(); });
 
     var n = doc.getNumberOfPages();
