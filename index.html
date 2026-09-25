@@ -44,11 +44,20 @@
   input:focus,select:focus,textarea:focus{outline:2px solid var(--acc);outline-offset:-1px}
   textarea{min-height:80px;resize:vertical}
   .row{display:flex;gap:10px}.row>*{flex:1}
-  button{font-family:inherit;font-size:16px;border:0;border-radius:10px;padding:13px 16px;cursor:pointer}
+  button{font-family:inherit;font-size:16px;border:0;border-radius:10px;padding:13px 16px;cursor:pointer;
+         transition:transform .06s ease, background-color .12s ease, box-shadow .12s ease}
   .btn{background:var(--acc);color:#fff;font-weight:600;width:100%}
-  .btn:active{background:var(--acc-d)}
-  .btn:disabled{opacity:.55}
+  .btn:active{background:var(--acc-d);transform:scale(.97)}
+  .btn:disabled{opacity:.7}
   .btn.sec{background:#fff;color:var(--txt);border:1px solid var(--line)}
+  .btn.sec:active{background:#eaeef3;transform:scale(.97)}
+  .x:active,.lien:active{transform:scale(.94)}
+  /* petit rond qui tourne dans un bouton occupé */
+  .spin{display:inline-block;width:15px;height:15px;margin-right:9px;vertical-align:-3px;
+        border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+        animation:tourne .7s linear infinite}
+  .btn.sec .spin{border-color:rgba(0,76,146,.25);border-top-color:var(--acc)}
+  @keyframes tourne{to{transform:rotate(360deg)}}
   .btn.sm{padding:10px 12px;font-size:14px;width:auto}
   .bar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);
        padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:flex;gap:10px;z-index:30}
@@ -124,7 +133,7 @@
     <h2>Première utilisation</h2>
     <p class="mini" id="msg0">Connecte-toi une première fois à Internet : l'application télécharge le catalogue
       et les tarifs, puis elle fonctionne ensuite entièrement hors connexion.</p>
-    <button class="btn" style="margin-top:12px" onclick="chargerConfig(true)">Télécharger le catalogue</button>
+    <button class="btn" style="margin-top:12px" onclick="chargerConfig(true, this)">Télécharger le catalogue</button>
   </section>
 
   <!-- ÉTAPE 1 : COMMERCIAL -->
@@ -214,7 +223,7 @@
       <div id="okTot" style="font-size:15px"></div>
       <div class="mini" id="okEtat" style="color:inherit;opacity:.85"></div>
     </div>
-    <button class="btn" onclick="partagerDernier()">Envoyer / partager le PDF</button>
+    <button class="btn" onclick="partagerDernier(this)">Envoyer / partager le PDF</button>
     <button class="btn sec" style="margin-top:10px" onclick="nouveauDevis()">Nouveau devis</button>
   </section>
 
@@ -223,7 +232,7 @@
     <div class="card">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
         <h2 style="flex:1;margin:0">Mes devis</h2>
-        <button class="btn sec sm" onclick="synchroniser(true)">Synchroniser</button>
+        <button class="btn sec sm" onclick="synchroniser(true, this)">Synchroniser</button>
       </div>
       <div id="liste"></div>
     </div>
@@ -265,11 +274,11 @@
   <div class="dlg-b" id="dlgB"></div>
 </dialog>
 
-<script src="config.js?v=4"></script>
-<script src="jspdf.umd.min.js?v=4"></script>
-<script src="police.js?v=4"></script>
-<script src="logo.js?v=4"></script>
-<script src="pdf.js?v=4"></script>
-<script src="app.js?v=4"></script>
+<script src="config.js?v=5"></script>
+<script src="jspdf.umd.min.js?v=5"></script>
+<script src="police.js?v=5"></script>
+<script src="logo.js?v=5"></script>
+<script src="pdf.js?v=5"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

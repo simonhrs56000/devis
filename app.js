@@ -19,6 +19,40 @@ function eur(n){ var v=(Math.round((Number(n)||0)*100)/100).toFixed(2).split('.'
   return v[0].replace(/\B(?=(\d{3})+(?!\d))/g,' ')+','+v[1]+' €'; }
 function erreur(m){ var e=$('erreur'); if(!m){e.classList.add('hide');return;}
   e.textContent=m; e.classList.remove('hide'); window.scrollTo(0,0); }
+
+/* ---- retour immédiat quand on appuie sur un bouton ---- */
+
+/* iOS n'applique :active que si la page écoute le toucher */
+document.addEventListener('touchstart', function(){}, {passive:true});
+
+/* Petite vibration là où c'est disponible (Android) ; ignorée ailleurs. */
+function vibrer(ms){ try{ if(navigator.vibrate) navigator.vibrate(ms||8); }catch(e){} }
+
+/* Met un bouton en « travail en cours » : rond qui tourne + libellé, et on
+   empêche le double appui. libere() remet le bouton dans son état d'origine. */
+function occuper(btn, texte){
+  if(!btn || btn.dataset.busy) return false;
+  btn.dataset.busy = '1';
+  btn.dataset.avant = btn.innerHTML;
+  btn.innerHTML = '<span class="spin"></span>' + (texte || 'Un instant…');
+  btn.disabled = true;
+  vibrer(8);
+  return true;
+}
+function libere(btn){
+  if(!btn || !btn.dataset.busy) return;
+  btn.innerHTML = btn.dataset.avant || btn.innerHTML;
+  btn.disabled = false;
+  delete btn.dataset.busy; delete btn.dataset.avant;
+}
+
+/* Laisse le navigateur AFFICHER l'état « en cours » avant de lancer un
+   traitement lourd (la fabrication du PDF fige l'écran pendant ~1 s). */
+function peindre(){
+  return new Promise(function(res){
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ setTimeout(res, 0); }); });
+  });
+}
 function ls(k,v){ try{ if(v===undefined) return localStorage.getItem(k);
   if(v===null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){} return null; }
 function lsj(k,v){ if(v===undefined){ try{ return JSON.parse(ls(k)||'null'); }catch(e){ return null; } }
@@ -133,8 +167,9 @@ function reidentifier(raison){
 }
 
 /* ====================== CONFIG (catalogue, tarifs) ====================== */
-function chargerConfig(bloquant){
+function chargerConfig(bloquant, btn){
   var ac = null;
+  if(btn) occuper(btn, 'Téléchargement…');
   if(!navigator.onLine){
     if(bloquant){ $('msg0').textContent = 'Aucune connexion. Reconnecte-toi puis réessaie.'; }
     return;
@@ -151,6 +186,7 @@ function chargerConfig(bloquant){
       if(!d.ok) throw new Error(d.erreur||'réponse invalide');
       CFG = d; lsj('cfg', d);
       alignerCompteurs();
+      if(btn) libere(btn);
       if(bloquant){ montrer(null); demarrer(); }
       else{
         var m=$('majCat'); if(m) m.textContent = new Date(d.maj).toLocaleDateString('fr-FR');
@@ -159,6 +195,7 @@ function chargerConfig(bloquant){
     })
     .catch(function(e){
       if(stop) clearTimeout(stop);
+      if(btn) libere(btn);
       if(bloquant) $('msg0').textContent = 'Le catalogue n\'a pas pu être téléchargé (' +
         (e.name === 'AbortError' ? 'délai dépassé' : e.message) +
         '). Vérifie ta connexion et appuie de nouveau sur le bouton.';
@@ -446,8 +483,12 @@ function enregistrer(){
   if(!moi) return erreur('Identifie-toi d\'abord.');
 
   EN_COURS = true;
-  var b = $('bSuiv'); b.disabled = true; b.textContent = 'Enregistrement…';
+  var b = $('bSuiv');
+  occuper(b, 'Création du PDF…');
+  peindre().then(function(){ enregistrerSuite(b, envoi, moi); });
+}
 
+function enregistrerSuite(b, envoi, moi){
   try{
     var jours = Number((CFG.reglages||{}).validite_jours||30);
     var devis = {
@@ -479,13 +520,13 @@ function enregistrer(){
       $('okEtat').textContent = navigator.onLine
         ? 'Envoi au bureau en cours…'
         : 'Hors connexion : le devis part automatiquement dès que le réseau revient.';
-      EN_COURS=false; b.disabled=false; b.textContent='Enregistrer le devis';
+      EN_COURS=false; libere(b);
       montrer(5); $('steps').classList.add('hide'); $('bar').classList.add('hide');
       $('hTitre').textContent='Terminé'; window.scrollTo(0,0);
       synchroniser(false);
     });
   }catch(e){
-    EN_COURS=false; b.disabled=false; b.textContent='Enregistrer le devis';
+    EN_COURS=false; libere(b);
     erreur('Erreur lors de la création du PDF : '+e.message);
   }
 }
@@ -510,8 +551,14 @@ function partager(enr){
   a.href=url; a.download=enr.nomFichier; document.body.appendChild(a); a.click();
   setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 4000);
 }
-function partagerDernier(){ partager(DERNIER); }
-function partagerId(id){ DB.get(id).then(partager); }
+function partagerDernier(btn){
+  if(btn) occuper(btn, 'Préparation…');
+  peindre().then(function(){ partager(DERNIER); if(btn) setTimeout(function(){ libere(btn); }, 600); });
+}
+function partagerId(id, btn){
+  if(btn) occuper(btn, '…');
+  DB.get(id).then(function(e){ partager(e); if(btn) setTimeout(function(){ libere(btn); }, 600); });
+}
 
 /* ====================== SYNCHRONISATION ====================== */
 function etatReseau(nb, msg, classe){
@@ -529,9 +576,11 @@ function etatReseau(nb, msg, classe){
 }
 
 var SYNC = false;
-function synchroniser(manuel){
-  if(SYNC) return;
+function synchroniser(manuel, btn){
+  if(SYNC){ if(btn) libere(btn); return; }
+  if(btn) occuper(btn, 'Envoi…');
   if(!navigator.onLine){
+    if(btn) libere(btn);
     if(manuel) etatReseau(null, 'Hors connexion : impossible de synchroniser maintenant.', 'off');
     else etatReseau();
     return;
@@ -539,15 +588,15 @@ function synchroniser(manuel){
   SYNC = true;                     // verrou posé tout de suite : deux appels rapprochés
   DB.tous().then(function(l){      // (retour du réseau + minuterie) n'enverraient pas deux fois
     var att = l.filter(function(x){ return x.statut==='attente'; });
-    if(!att.length){ SYNC = false; etatReseau(); if(ETAPE===6) rendreHistorique(); return; }
+    if(!att.length){ SYNC = false; if(btn) libere(btn); etatReseau(); if(ETAPE===6) rendreHistorique(); return; }
     etatReseau(null, 'Envoi de '+att.length+' devis…', 'att');
     var suite = Promise.resolve();
     att.forEach(function(enr){ suite = suite.then(function(){ return envoyer(enr); }); });
     suite.then(function(){
-      SYNC = false;
+      SYNC = false; if(btn) libere(btn);
       etatReseau(); if(ETAPE===6) rendreHistorique(); majEtatDernier();
-    }, function(){ SYNC = false; etatReseau(); });
-  }, function(){ SYNC = false; });
+    }, function(){ SYNC = false; if(btn) libere(btn); etatReseau(); });
+  }, function(){ SYNC = false; if(btn) libere(btn); });
 }
 
 function envoyer(enr){
@@ -607,19 +656,20 @@ function rendreHistorique(){
         ech(e.numero)+' · '+d.toLocaleDateString('fr-FR')+' · '+eur(e.devis.totaux.ttc)+' TTC'+
         (e.statut==='envoye'?'':' · à envoyer')+
         (e.numeroPdf?' · renuméroté (PDF client : '+ech(e.numeroPdf)+')':'')+'</span></div>'+
-        '<button class="btn sec sm" onclick="partagerId(\''+e.id+'\')">PDF</button>'+
-        '<button class="btn sec sm" title="Renvoyer au bureau" onclick="renvoyer(\''+e.id+'\')">⟳</button></div>';
+        '<button class="btn sec sm" onclick="partagerId(\''+e.id+'\', this)">PDF</button>'+
+        '<button class="btn sec sm" title="Renvoyer au bureau" onclick="renvoyer(\''+e.id+'\', this)">⟳</button></div>';
     }).join('');
   });
 }
 
 /* Repasser un devis en file d'attente : utile si le bureau ne l'a jamais reçu.
    Aucun risque de doublon, le bureau reconnaît un devis déjà enregistré. */
-function renvoyer(id){
+function renvoyer(id, btn){
+  if(btn) occuper(btn, '');
   DB.get(id).then(function(e){
-    if(!e) return;
+    if(!e){ if(btn) libere(btn); return; }
     e.statut = 'attente'; delete e.derniereErreur;
-    return DB.put(e).then(function(){ rendreHistorique(); synchroniser(true); });
+    return DB.put(e).then(function(){ rendreHistorique(); synchroniser(true); });  // le rendu recrée le bouton
   });
 }
 
