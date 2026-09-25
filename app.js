@@ -66,8 +66,14 @@ window.addEventListener('load', function(){
 
   CFG = lsj('cfg');
   if(CFG){ demarrer(); if(navigator.onLine) chargerConfig(false); }
-  else if(navigator.onLine){ chargerConfig(true); }
-  else { $('hSub').textContent='Hors connexion'; $('steps').classList.add('hide'); $('bar').classList.add('hide'); montrer(0); }
+  else {
+    // premier lancement : on montre l'écran d'accueil tout de suite,
+    // pour ne jamais laisser l'écran vide pendant le téléchargement
+    $('hSub').textContent = navigator.onLine ? 'Première installation' : 'Hors connexion';
+    $('steps').classList.add('hide'); $('bar').classList.add('hide');
+    montrer(0);
+    if(navigator.onLine) chargerConfig(true);
+  }
 
   window.addEventListener('online', function(){ etatReseau(); synchroniser(false); });
   window.addEventListener('offline', etatReseau);
@@ -79,7 +85,11 @@ function demarrer(){
   var s = $('fCommercial');
   s.innerHTML = CFG.commerciaux.map(function(c){ return '<option>'+ech(c.nom)+'</option>'; }).join('');
   var moi = lsj('moi');
-  if(moi){ s.value = moi.nom; $('fCode').value = moi.code; }
+  if(moi && CFG.commerciaux.some(function(c){ return c.nom===moi.nom; })){
+    s.value = moi.nom; $('fCode').value = moi.code;
+  } else if(moi){
+    lsj('moi', null); moi = null;   // ce commercial n'existe plus dans le classeur
+  }
   var b = lsj('brouillon');
   if(b && b.lignes && b.lignes.length && confirm('Un devis non terminé a été retrouvé. Le reprendre ?')) restaurer(b);
   etape(moi ? 2 : 1);
@@ -87,24 +97,66 @@ function demarrer(){
   synchroniser(false);
 }
 
+/* Le bureau a changé la liste des commerciaux, un code ou les tarifs pendant
+   que l'appli tournait : on remet l'écran à jour sans attendre un redémarrage. */
+function appliquerNouvelleConfig(){
+  if(!CFG || !CFG.commerciaux) return;
+  var noms = CFG.commerciaux.map(function(c){ return c.nom; });
+  var s = $('fCommercial'), choisi = s.value;
+  s.innerHTML = noms.map(function(n){ return '<option>'+ech(n)+'</option>'; }).join('');
+  $('hSub').textContent = (CFG.reglages && CFG.reglages.societe_nom) || 'Devis sur place';
+
+  var moi = lsj('moi');
+  if(!moi){ if(noms.indexOf(choisi)>=0) s.value = choisi; return; }
+
+  if(noms.indexOf(moi.nom) < 0) return reidentifier('Ta fiche a changé côté bureau.');
+
+  // le code a-t-il été modifié dans le classeur ?
+  var c = null;
+  CFG.commerciaux.forEach(function(x){ if(x.nom===moi.nom) c=x; });
+  sha256(moi.nom+'|'+moi.code+'|'+(CFG.sel||'')).then(function(h){
+    if(c && c.empreinte && h && h !== c.empreinte) return reidentifier('Ton code a été modifié.');
+    s.value = moi.nom;
+  });
+}
+
+function reidentifier(raison){
+  lsj('moi', null);
+  $('fCode').value = '';
+  if(ETAPE >= 3) return;          // devis en cours : on ne coupe rien, ce sera au prochain
+  etape(1);
+  erreur(raison + ' Choisis ton nom et saisis ton code.');
+}
+
 /* ====================== CONFIG (catalogue, tarifs) ====================== */
 function chargerConfig(bloquant){
+  var ac = null;
   if(!navigator.onLine){
     if(bloquant){ $('msg0').textContent = 'Aucune connexion. Reconnecte-toi puis réessaie.'; }
     return;
   }
   if(bloquant) $('msg0').textContent = 'Téléchargement en cours…';
-  fetch(API_URL + '?action=config&t=' + Date.now(), { method:'GET' })
-    .then(function(r){ return r.json(); })
+  var stop = null;
+  if(window.AbortController){
+    ac = new AbortController();
+    stop = setTimeout(function(){ ac.abort(); }, 25000);   // pas d'attente sans fin
+  }
+  fetch(API_URL + '?action=config&t=' + Date.now(), ac ? {method:'GET', signal:ac.signal} : {method:'GET'})
+    .then(function(r){ if(stop) clearTimeout(stop); return r.json(); })
     .then(function(d){
       if(!d.ok) throw new Error(d.erreur||'réponse invalide');
       CFG = d; lsj('cfg', d);
       if(bloquant){ montrer(null); demarrer(); }
-      else{ var m=$('majCat'); if(m) m.textContent = new Date(d.maj).toLocaleDateString('fr-FR'); }
+      else{
+        var m=$('majCat'); if(m) m.textContent = new Date(d.maj).toLocaleDateString('fr-FR');
+        appliquerNouvelleConfig();   // le bureau a modifié commerciaux / codes / tarifs
+      }
     })
     .catch(function(e){
-      if(bloquant) $('msg0').textContent = 'Échec du téléchargement : ' + e.message +
-        '. Vérifie l\'adresse dans config.js et que le déploiement est accessible à « Tout le monde ».';
+      if(stop) clearTimeout(stop);
+      if(bloquant) $('msg0').textContent = 'Le catalogue n\'a pas pu être téléchargé (' +
+        (e.name === 'AbortError' ? 'délai dépassé' : e.message) +
+        '). Vérifie ta connexion et appuie de nouveau sur le bouton.';
     });
 }
 
