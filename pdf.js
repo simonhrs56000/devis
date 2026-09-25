@@ -7,7 +7,9 @@ var PDF = (function () {
   var W = 210, H = 297;  // A4
   var R = W - M;         // bord droit
   var F = 'LibSans';     // police intégrée au PDF
-  var GRIS = [107, 114, 128], NOIR = [17, 24, 39], BLEU = [29, 78, 216], TRAIT = [226, 229, 234];
+  var GRIS = [107, 114, 128], NOIR = [17, 24, 39], TRAIT = [226, 229, 234];
+  var MARQUE = [0, 76, 146];        // bleu du logo
+  var BLEU = MARQUE;
 
   function eur(n) {
     var v = (Math.round((Number(n) || 0) * 100) / 100).toFixed(2).split('.');
@@ -37,17 +39,29 @@ var PDF = (function () {
     var y;
 
     /* ---------- en-tête société ---------- */
-    police('bold', 15);
-    doc.text(txt(reg.societe_nom).toUpperCase(), M, 20);
+    var logoOk = false;
+    if (typeof LOGO !== 'undefined' && LOGO) {
+      try {
+        var p = doc.getImageProperties(LOGO);
+        var hL = 21, wL = hL * p.width / p.height;      // logo calé sur 21 mm de haut
+        if (wL > 55) { wL = 55; hL = wL * p.height / p.width; }
+        doc.addImage(LOGO, 'PNG', M, 12, wL, hL);
+        logoOk = true;
+      } catch (e) { logoOk = false; }
+    }
+    if (!logoOk) {
+      police('bold', 15, MARQUE);
+      doc.text(txt(reg.societe_nom).toUpperCase(), M, 20);
+    }
 
     police('normal', 8, GRIS);
-    y = 25;
+    y = logoOk ? 38 : 25;
     [reg.societe_forme, reg.societe_adresse, reg.societe_cp_ville,
      txt(reg.societe_tel).trim() ? 'Tél. ' + txt(reg.societe_tel) : '', reg.societe_email]
       .forEach(function (l) { if (txt(l).trim()) { doc.text(txt(l), M, y); y += 4; } });
     var basGauche = y;
 
-    police('bold', 20);
+    police('bold', 20, MARQUE);
     doc.text('DEVIS', R, 20, { align: 'right' });
     police('normal', 8.5, GRIS);
     y = 26;
@@ -68,7 +82,8 @@ var PDF = (function () {
     if (txt(c.tel).trim()) lignesC.push({ t: 'Tél. ' + txt(c.tel) });
     if (txt(c.email).trim()) lignesC.push({ t: txt(c.email) });
 
-    var yC = Math.max(basGauche, y) + 2;
+    var yC = y + 2;          // le cadre client vit dans la colonne de droite,
+                              // il n'a pas à descendre sous le bloc société
     var hC = 8 + lignesC.length * 4.1;
     doc.setDrawColor(213, 216, 222).setLineWidth(0.2).roundedRect(xC, yC, wC, hC, 1.5, 1.5);
     police('normal', 6.5, GRIS);
@@ -85,7 +100,7 @@ var PDF = (function () {
     var yT = Math.max(yC + hC, basGauche) + 6;
 
     function enTete(yy) {
-      doc.setFillColor(31, 41, 55).rect(M, yy, R - M, 7, 'F');
+      doc.setFillColor(MARQUE[0], MARQUE[1], MARQUE[2]).rect(M, yy, R - M, 7, 'F');
       police('bold', 7, [255, 255, 255]);
       doc.text('DÉSIGNATION', COL.des + 2, yy + 4.6);
       doc.text('QTÉ', COL.qte, yy + 4.6, { align: 'right' });
@@ -151,7 +166,7 @@ var PDF = (function () {
     if (devis.remise) ligneTot('Remise appliquée', devis.remise + ' %');
     ligneTot('Total HT', eur(t.ht));
     ligneTot('TVA', eur(t.tva));
-    doc.setDrawColor(31, 41, 55).setLineWidth(0.5).line(xT, y - 2.5, R, y - 2.5);
+    doc.setDrawColor(MARQUE[0], MARQUE[1], MARQUE[2]).setLineWidth(0.5).line(xT, y - 2.5, R, y - 2.5);
     y += 2;
     ligneTot('TOTAL TTC', eur(t.ttc), true);
 

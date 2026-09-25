@@ -64,6 +64,10 @@ window.addEventListener('load', function(){
   initSignature();
   brancherSignature();
 
+  if(typeof LOGO_BLANC !== 'undefined' && LOGO_BLANC){
+    var lg = $('hLogo'); lg.src = LOGO_BLANC; lg.classList.remove('hide');
+  }
+
   CFG = lsj('cfg');
   if(CFG){ demarrer(); if(navigator.onLine) chargerConfig(false); }
   else {
