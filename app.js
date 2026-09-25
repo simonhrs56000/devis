@@ -203,10 +203,17 @@ function sha256(s){
       return ('0'+x.toString(16)).slice(-2); }).join('');
   }).catch(function(){ return null; });
 }
+/* Règle des codes : 4 caractères minimum, au moins un chiffre et un caractère spécial. */
+function codeConforme(c){
+  return String(c).length >= 4 && /[0-9]/.test(c) && /[^A-Za-z0-9]/.test(c);
+}
+
 function verifierCommercial(){
   var nom = val('fCommercial'), code = val('fCode');
   if(!nom) return erreur('Choisis ton nom dans la liste.');
   if(!code) return erreur('Saisis ton code.');
+  if(!codeConforme(code)) return erreur(
+    'Code incomplet : au moins 4 caractères, dont un chiffre et un caractère spécial.');
   var c = null;
   CFG.commerciaux.forEach(function(x){ if(x.nom===nom) c=x; });
   if(!c) return erreur('Commercial inconnu.');

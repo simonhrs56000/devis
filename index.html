@@ -131,9 +131,11 @@
     <h2>Qui établit le devis ?</h2>
     <label>Commercial</label>
     <select id="fCommercial"></select>
-    <label>Code</label>
-    <input id="fCode" type="tel" inputmode="numeric" autocomplete="off" placeholder="Code à 4 chiffres">
-    <div class="mini">Retenu sur cet appareil : à saisir une seule fois.</div>
+    <label>Code personnel</label>
+    <input id="fCode" type="text" inputmode="text" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="ex. Br3!zh">
+    <div class="mini">Au moins 4 caractères, dont un chiffre et un caractère spécial
+      (! ? * # &amp; - _ …). Retenu sur cet appareil : à saisir une seule fois.</div>
   </section>
 
   <!-- ÉTAPE 2 : CLIENT -->
