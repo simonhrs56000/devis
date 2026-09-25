@@ -69,7 +69,7 @@ window.addEventListener('load', function(){
   }
 
   CFG = lsj('cfg');
-  if(CFG){ demarrer(); if(navigator.onLine) chargerConfig(false); }
+  if(CFG){ alignerCompteurs(); demarrer(); if(navigator.onLine) chargerConfig(false); }
   else {
     // premier lancement : on montre l'écran d'accueil tout de suite,
     // pour ne jamais laisser l'écran vide pendant le téléchargement
@@ -150,6 +150,7 @@ function chargerConfig(bloquant){
     .then(function(d){
       if(!d.ok) throw new Error(d.erreur||'réponse invalide');
       CFG = d; lsj('cfg', d);
+      alignerCompteurs();
       if(bloquant){ montrer(null); demarrer(); }
       else{
         var m=$('majCat'); if(m) m.textContent = new Date(d.maj).toLocaleDateString('fr-FR');
@@ -415,12 +416,25 @@ function initiales(nom){
   var p = String(nom).trim().split(/\s+/).map(function(m){ return m.charAt(0); }).join('');
   return (p.toUpperCase().replace(/[^A-Z]/g,'') || 'XX').slice(0,3);
 }
-function prochainNumero(nom){
+function serieDe(nom){
   var an = new Date().getFullYear();
-  var cle = 'seq_'+an, n = Number(ls(cle)||0)+1;
+  return String((CFG.reglages||{}).prefixe_devis||'DEV')+'-'+an+'-'+initiales(nom);
+}
+function prochainNumero(nom){
+  var serie = serieDe(nom), cle = 'seq_'+serie;
+  var n = Number(ls(cle)||0)+1;
   ls(cle, String(n));
-  var prefixe = String((CFG.reglages||{}).prefixe_devis||'DEV');
-  return prefixe+'-'+an+'-'+initiales(nom)+'-'+('000'+n).slice(-4);
+  return serie+'-'+('000'+n).slice(-4);
+}
+/* Le bureau nous dit où en est chaque série : un téléphone réinstallé
+   (compteur reparti à zéro) ne réutilise pas un numéro déjà pris. */
+function alignerCompteurs(){
+  var c = CFG && CFG.compteurs;
+  if(!c) return;
+  Object.keys(c).forEach(function(serie){
+    var cle = 'seq_'+serie, local = Number(ls(cle)||0), distant = Number(c[serie])||0;
+    if(distant > local) ls(cle, String(distant));
+  });
 }
 
 /* ====================== ENREGISTREMENT ====================== */
@@ -541,7 +555,7 @@ function envoyer(enr){
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},  // évite la requête preflight
     body: JSON.stringify({
-      action:'sync', nom:enr.nom, code:enr.code, appareil:enr.appareil,
+      action:'sync', id:enr.id, nom:enr.nom, code:enr.code, appareil:enr.appareil,
       envoyerClient:enr.envoyerClient, devis:enr.devis, pdf:enr.pdf, nomFichier:enr.nomFichier
     })
   })
@@ -549,6 +563,9 @@ function envoyer(enr){
   .then(function(d){
     if(!d.ok) throw new Error(d.erreur||'refusé');
     enr.statut='envoye'; enr.pdfUrl=d.pdfUrl||''; enr.envoye=Date.now();
+    if(d.numero && d.numero !== enr.numero){   // le bureau a dû renuméroter
+      enr.numeroPdf = enr.numero; enr.numero = d.numero;
+    }
     return DB.put(enr);
   })
   .catch(function(e){
@@ -586,11 +603,23 @@ function rendreHistorique(){
       var cl = String((e.devis.client||{}).societe || (e.devis.client||{}).contact || '—');
       return '<div class="hist"><div class="i">'+
         '<b>'+ech(cl)+'</b>'+
-        '<span><span class="pt '+(e.statut==='envoye'?'ok':'att')+'"></span>'+
+        '<span><span class="pt '+(e.statut==='envoye'?'pt-ok':'pt-att')+'"></span>'+
         ech(e.numero)+' · '+d.toLocaleDateString('fr-FR')+' · '+eur(e.devis.totaux.ttc)+' TTC'+
-        (e.statut==='envoye'?'':' · à envoyer')+'</span></div>'+
-        '<button class="btn sec sm" onclick="partagerId(\''+e.id+'\')">PDF</button></div>';
+        (e.statut==='envoye'?'':' · à envoyer')+
+        (e.numeroPdf?' · renuméroté (PDF client : '+ech(e.numeroPdf)+')':'')+'</span></div>'+
+        '<button class="btn sec sm" onclick="partagerId(\''+e.id+'\')">PDF</button>'+
+        '<button class="btn sec sm" title="Renvoyer au bureau" onclick="renvoyer(\''+e.id+'\')">⟳</button></div>';
     }).join('');
+  });
+}
+
+/* Repasser un devis en file d'attente : utile si le bureau ne l'a jamais reçu.
+   Aucun risque de doublon, le bureau reconnaît un devis déjà enregistré. */
+function renvoyer(id){
+  DB.get(id).then(function(e){
+    if(!e) return;
+    e.statut = 'attente'; delete e.derniereErreur;
+    return DB.put(e).then(function(){ rendreHistorique(); synchroniser(true); });
   });
 }
 

@@ -93,7 +93,7 @@ function initialiser() {
     'NUMERO', 'DATE', 'COMMERCIAL', 'CLIENT', 'CONTACT', 'TELEPHONE', 'EMAIL',
     'ADRESSE', 'CP', 'VILLE', 'TOTAL_HT_PONCTUEL', 'TOTAL_HT_MENSUEL', 'TOTAL_HT',
     'TOTAL_TVA', 'TOTAL_TTC', 'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE',
-    'VALIDITE', 'LIEN_PDF', 'NOTES', 'RECU_LE', 'ID_APPAREIL'
+    'VALIDITE', 'LIEN_PDF', 'NOTES', 'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS'
   ]);
   creerOnglet_(ss, SH.LIGNES, [
     'NUMERO', 'ORDRE', 'CATEGORIE', 'DESIGNATION', 'DETAIL', 'QTE', 'UNITE',
@@ -195,7 +195,8 @@ function doGet(e) {
       ok: true,
       maj: new Date().toISOString(),
       sel: sel,
-      reglages: reg,
+      compteurs: compteurs_(),      // dernier numéro utilisé par commercial : évite
+      reglages: reg,                // qu'un téléphone réinstallé reparte à 0001
       catalogue: lireCatalogue_(),
       commerciaux: lireCommerciaux_().map(function (c) {
         return { nom: c.nom, empreinte: empreinte_(c.nom, c.code, sel) };
@@ -228,19 +229,52 @@ function doPost(e) {
   }
 }
 
+/** Plus grand numéro déjà utilisé, par série (préfixe + année + initiales). */
+function compteurs_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.DEVIS);
+  var out = {};
+  if (!sh || sh.getLastRow() < 2) return out;
+  sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues().forEach(function (r) {
+    var m = String(r[0]).match(/^(.+)-(\d+)$/);          // tout sauf les 4 derniers chiffres
+    if (!m) return;
+    var serie = m[1], n = Number(m[2]);
+    if (!out[serie] || n > out[serie]) out[serie] = n;
+  });
+  return out;
+}
+
 function enregistrer_(d, com) {
   var ss = SpreadsheetApp.getActive();
   var reg = lireReglages_();
   var devis = d.devis;
   var shD = ss.getSheetByName(SH.DEVIS);
+  var renumerote = '';
 
-  // déjà reçu ? (le téléphone peut renvoyer un devis si la réponse s'est perdue)
   if (shD.getLastRow() > 1) {
-    var col = shD.getRange(2, 1, shD.getLastRow() - 1, 1).getValues();
-    for (var i = 0; i < col.length; i++) {
-      if (String(col[i][0]) === String(devis.numero)) {
-        return { ok: true, doublon: true, numero: devis.numero,
-                 pdfUrl: String(shD.getRange(i + 2, 21).getValue() || '') };
+    var lignes = shD.getRange(2, 1, shD.getLastRow() - 1, 24).getValues();
+
+    // 1. déjà reçu ? on compare l'identifiant unique du devis, pas son numéro
+    //    (un téléphone réinstallé peut réémettre le même numéro pour un autre devis)
+    for (var i = 0; i < lignes.length; i++) {
+      if (d.id && String(lignes[i][23]) === String(d.id)) {
+        return { ok: true, doublon: true, numero: String(lignes[i][0]),
+                 pdfUrl: String(lignes[i][20] || '') };
+      }
+    }
+
+    // 2. numéro déjà pris par un AUTRE devis -> on en attribue un libre
+    var pris = {};
+    lignes.forEach(function (r) { pris[String(r[0])] = true; });
+    if (pris[String(devis.numero)]) {
+      var m = String(devis.numero).match(/^(.+)-(\d+)$/);
+      if (m) {
+        var serie = m[1], n = Number(m[2]);
+        while (pris[serie + '-' + ('000' + n).slice(-4)]) n++;
+        renumerote = devis.numero;
+        devis.numero = serie + '-' + ('000' + n).slice(-4);
+      } else {
+        renumerote = devis.numero;
+        devis.numero = devis.numero + '-B';
       }
     }
   }
@@ -259,8 +293,9 @@ function enregistrer_(d, com) {
     c.tel || '', c.email || '', c.adresse || '', c.cp || '', c.ville || '',
     t.htPonctuel || 0, t.htMensuel || 0, t.ht || 0, t.tva || 0, t.ttc || 0, devis.remise || 0,
     devis.signature ? 'SIGNE' : 'EN ATTENTE', devis.signature ? 'OUI' : 'NON',
-    devis.signataire || '', new Date(devis.validite), lienPdf, devis.notes || '',
-    new Date(), d.appareil || ''
+    devis.signataire || '', new Date(devis.validite), lienPdf,
+    (devis.notes || '') + (renumerote ? ' [numéro d\'origine sur le PDF du client : ' + renumerote + ']' : ''),
+    new Date(), d.appareil || '', d.id || ''
   ]);
 
   var shL = ss.getSheetByName(SH.LIGNES);
@@ -298,7 +333,8 @@ function enregistrer_(d, com) {
     }
   } catch (eMail) { /* un mail raté ne doit pas faire échouer la synchro */ }
 
-  return { ok: true, doublon: false, numero: devis.numero, pdfUrl: lienPdf };
+  return { ok: true, doublon: false, numero: devis.numero, pdfUrl: lienPdf,
+           renumerote: renumerote || undefined };
 }
 
 /* ========================== LECTURES ========================== */
