@@ -153,7 +153,7 @@ var REGLAGES_DEFAUT_ = [
   ['conditions_reglement', 'Paiement à 30 jours à réception de facture. Pénalités de retard : 3 fois le taux d\'intérêt légal. Indemnité forfaitaire de recouvrement : 40 €.', 'Bas de devis'],
   ['mentions_bas', 'Devis gratuit. Il doit être retourné daté et signé avec la mention « Bon pour accord ».', 'Bas de devis'],
   ['prefixe_devis', 'DEV', 'Numéro : DEV-2026-KL-0001 (KL = initiales du commercial)'],
-  ['dossier_drive_id', '', 'Rempli automatiquement au 1er devis reçu'],
+  ['dossier_racine_id', '', 'Dossier Drive racine — rempli automatiquement'],
   ['email_copie', '', 'Adresse qui reçoit une copie de chaque devis'],
   ['sel_codes', '', 'Généré automatiquement — ne pas modifier']
 ];
@@ -189,6 +189,7 @@ function doGet(e) {
     var reg = lireReglages_();
     var sel = String(reg.sel_codes || '');
     delete reg.sel_codes;
+    delete reg.dossier_racine_id;
     delete reg.dossier_drive_id;
     delete reg.email_copie;
     return reponse_({
@@ -284,7 +285,7 @@ function enregistrer_(d, com) {
   if (d.pdf) {
     blob = Utilities.newBlob(Utilities.base64Decode(d.pdf), 'application/pdf',
       d.nomFichier || ('Devis ' + devis.numero + '.pdf'));
-    lienPdf = dossierDevis_(reg).createFile(blob).getUrl();
+    lienPdf = dossierDevis_(reg, new Date(devis.date), devis.commercial).createFile(blob).getUrl();
   }
 
   var c = devis.client || {}, t = devis.totaux || {};
@@ -388,15 +389,36 @@ function ecrireReglage_(cle, valeur) {
   sh.appendRow([cle, valeur, '']);
 }
 
-function dossierDevis_(reg) {
-  var id = String(reg.dossier_drive_id || '').trim();
+var MOIS_ = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+             'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+
+/** Le dossier racine de l'archivage (créé au besoin, puis mémorisé). */
+function racineDevis_(reg) {
+  var id = String(reg.dossier_racine_id || '').trim();
   if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
   var it = DriveApp.getFoldersByName('DEVIS NETTOYAGE');
   var racine = it.hasNext() ? it.next() : DriveApp.createFolder('DEVIS NETTOYAGE');
-  var annee = String(new Date().getFullYear());
-  var it2 = racine.getFoldersByName(annee);
-  var dossier = it2.hasNext() ? it2.next() : racine.createFolder(annee);
-  ecrireReglage_('dossier_drive_id', dossier.getId());
+  ecrireReglage_('dossier_racine_id', racine.getId());
+  return racine;
+}
+
+function sousDossier_(parent, nom) {
+  nom = String(nom || '').trim() || 'Sans nom';
+  var it = parent.getFoldersByName(nom);
+  return it.hasNext() ? it.next() : parent.createFolder(nom);
+}
+
+/**
+ * Rangement : DEVIS NETTOYAGE / 2026 / 09 - septembre / SIMON H /
+ * Le classement suit la DATE DU DEVIS, pas celle de la réception : un devis
+ * signé hors connexion le 30 et remonté le 1er reste dans le bon mois.
+ */
+function dossierDevis_(reg, date, commercial) {
+  var d = (date instanceof Date && !isNaN(date)) ? date : new Date();
+  var dossier = racineDevis_(reg);
+  dossier = sousDossier_(dossier, String(d.getFullYear()));
+  dossier = sousDossier_(dossier, ('0' + (d.getMonth() + 1)).slice(-2) + ' - ' + MOIS_[d.getMonth()]);
+  dossier = sousDossier_(dossier, commercial || 'Sans commercial');
   return dossier;
 }
 

@@ -477,6 +477,9 @@ function alignerCompteurs(){
 /* ====================== ENREGISTREMENT ====================== */
 function enregistrer(){
   if(EN_COURS) return;
+  if(ETAPE !== 4) return;                       // on n'enregistre que depuis l'écran de validation
+  if(!LIGNES.length) return erreur('Ajoute au moins une prestation.');
+  if(!val('cSociete') && !val('cContact')) return erreur('Indique au moins la société ou le nom du client.');
   var envoi = $('fEnvoi').checked;
   if(envoi && !val('cEmail')) return erreur('Pas d\'e-mail client : décoche l\'envoi ou renseigne l\'adresse.');
   var moi = lsj('moi');
@@ -485,10 +488,22 @@ function enregistrer(){
   EN_COURS = true;
   var b = $('bSuiv');
   occuper(b, 'Création du PDF…');
-  peindre().then(function(){ enregistrerSuite(b, envoi, moi); });
+  // filet de sécurité : un bouton ne doit jamais rester bloqué
+  var secours = setTimeout(function(){ debloquer(b); }, 30000);
+  peindre().then(function(){
+    try{ enregistrerSuite(b, envoi, moi, secours); }
+    catch(e){ debloquer(b, secours); erreur('Erreur inattendue : ' + e.message); }
+  }, function(){ debloquer(b, secours); });
 }
 
-function enregistrerSuite(b, envoi, moi){
+/* Remet l'application en état, quoi qu'il arrive. */
+function debloquer(b, secours){
+  if(secours) clearTimeout(secours);
+  EN_COURS = false;
+  libere(b || $('bSuiv'));
+}
+
+function enregistrerSuite(b, envoi, moi, secours){
   try{
     var jours = Number((CFG.reglages||{}).validite_jours||30);
     var devis = {
@@ -520,13 +535,16 @@ function enregistrerSuite(b, envoi, moi){
       $('okEtat').textContent = navigator.onLine
         ? 'Envoi au bureau en cours…'
         : 'Hors connexion : le devis part automatiquement dès que le réseau revient.';
-      EN_COURS=false; libere(b);
+      debloquer(b, secours);
       montrer(5); $('steps').classList.add('hide'); $('bar').classList.add('hide');
       $('hTitre').textContent='Terminé'; window.scrollTo(0,0);
       synchroniser(false);
+    }, function(e){
+      debloquer(b, secours);
+      erreur('Le devis n\'a pas pu être enregistré sur l\'appareil : ' + (e && e.message || e));
     });
   }catch(e){
-    EN_COURS=false; libere(b);
+    debloquer(b, secours);
     erreur('Erreur lors de la création du PDF : '+e.message);
   }
 }
@@ -675,6 +693,7 @@ function renvoyer(id, btn){
 
 /* ====================== NOUVEAU DEVIS ====================== */
 function nouveauDevis(){
+  debloquer($('bSuiv'));
   LIGNES = [];
   ['cSociete','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes']
     .forEach(function(id){ $(id).value=''; });
