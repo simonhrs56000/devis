@@ -1,26 +1,29 @@
 /* Service worker : met l'application en cache pour qu'elle démarre sans réseau.
    Après toute modification des fichiers, incrémenter VERSION pour forcer la mise à jour. */
 
-var VERSION = 'devis-v5';
+var VERSION = 'devis-v6';
 
 var FICHIERS = [
   './',
   'index.html',
-  'config.js?v=5',
-  'jspdf.umd.min.js?v=5',
-  'police.js?v=5',
-  'logo.js?v=5',
-  'pdf.js?v=5',
-  'app.js?v=5',
+  'config.js?v=6',
+  'jspdf.umd.min.js?v=6',
+  'police.js?v=6',
+  'logo.js?v=6',
+  'pdf.js?v=6',
+  'app.js?v=6',
   'manifest.webmanifest',
   'icon-192.png',
   'icon-512.png'
 ];
 
 self.addEventListener('install', function (e) {
+  // cache:'reload' : on va chercher les fichiers sur le serveur, jamais dans le
+  // cache du navigateur — sinon une mise à jour peut être stockée déjà périmée.
+  var frais = FICHIERS.map(function (f) { return new Request(f, { cache: 'reload' }); });
   e.waitUntil(
     caches.open(VERSION)
-      .then(function (c) { return c.addAll(FICHIERS); })
+      .then(function (c) { return c.addAll(frais); })
       .then(function () { return self.skipWaiting(); })
   );
 });
@@ -44,7 +47,9 @@ self.addEventListener('fetch', function (e) {
   // rafraîchis en arrière-plan quand le réseau est là.
   e.respondWith(
     caches.match(e.request, { ignoreSearch: false }).then(function (rep) {
-      var reseau = fetch(e.request).then(function (r) {
+      // même précaution pour le rafraîchissement en arrière-plan
+      var demande = new Request(e.request.url, { cache: 'no-cache', credentials: 'same-origin' });
+      var reseau = fetch(demande).then(function (r) {
         if (r && r.status === 200 && r.type === 'basic') {
           var copie = r.clone();
           caches.open(VERSION).then(function (c) { c.put(e.request, copie); });
