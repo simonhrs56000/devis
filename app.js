@@ -150,6 +150,10 @@ window.addEventListener('load', function(){
   ls('moi', null);   // anciennes versions : la session ne doit plus survivre à la fermeture
 
   CFG = lsj('cfg');
+  // Une version antérieure de l'application interrogeait le serveur en GET et
+  // rangeait sa réponse comme configuration. Depuis que cette adresse ne répond
+  // plus qu'un accusé de service, ce reste doit être écarté.
+  if(CFG && !(CFG.catalogue && CFG.reglages)){ CFG = null; lsj('cfg', null); }
   if(CFG) alignerCompteurs();
   demarrer();
   purger();
@@ -237,7 +241,7 @@ function poster(corps, delai){
 }
 
 function rangerConfig(cfg){
-  if(!cfg) return;
+  if(!cfg || !cfg.catalogue || !cfg.reglages) return;
   CFG = cfg;
   lsj('cfg', cfg);
   alignerCompteurs();
