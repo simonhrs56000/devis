@@ -94,22 +94,28 @@ function normNom(s){
   return s;
 }
 
-/* ====================== BASE LOCALE (IndexedDB) ====================== */
+/* ====================== BASE LOCALE (IndexedDB) ======================
+   Deux réserves : les devis, et le journal des actions en attente d'envoi. */
 var DB = (function(){
   var db=null;
   function ouvrir(){
     return new Promise(function(res,rej){
       if(db) return res(db);
-      var r = indexedDB.open('devis', 1);
-      r.onupgradeneeded = function(){ r.result.createObjectStore('devis',{keyPath:'id'}); };
+      var r = indexedDB.open('devis', 2);
+      r.onupgradeneeded = function(){
+        var d = r.result;
+        if(!d.objectStoreNames.contains('devis')) d.createObjectStore('devis',{keyPath:'id'});
+        if(!d.objectStoreNames.contains('journal')) d.createObjectStore('journal',{keyPath:'id'});
+      };
       r.onsuccess = function(){ db=r.result; res(db); };
       r.onerror = function(){ rej(r.error); };
+      r.onblocked = function(){ /* un autre onglet retient l'ancienne version */ };
     });
   }
-  function tx(mode,fn){
+  function tx(reserve,mode,fn){
     return ouvrir().then(function(d){
       return new Promise(function(res,rej){
-        var t = d.transaction('devis', mode), st = t.objectStore('devis'), out;
+        var t = d.transaction(reserve, mode), st = t.objectStore(reserve), out;
         out = fn(st);
         t.oncomplete = function(){ res(out && out.result !== undefined ? out.result : out); };
         t.onerror = function(){ rej(t.error); };
@@ -117,12 +123,55 @@ var DB = (function(){
     });
   }
   return {
-    put: function(o){ return tx('readwrite', function(st){ return st.put(o); }); },
-    tous: function(){ return tx('readonly', function(st){ return st.getAll(); }); },
-    get: function(id){ return tx('readonly', function(st){ return st.get(id); }); },
-    suppr: function(id){ return tx('readwrite', function(st){ return st.delete(id); }); }
+    put:   function(o){  return tx('devis','readwrite', function(st){ return st.put(o); }); },
+    tous:  function(){   return tx('devis','readonly',  function(st){ return st.getAll(); }); },
+    get:   function(id){ return tx('devis','readonly',  function(st){ return st.get(id); }); },
+    suppr: function(id){ return tx('devis','readwrite', function(st){ return st.delete(id); }); },
+    jPut:   function(o){  return tx('journal','readwrite', function(st){ return st.put(o); }); },
+    jTous:  function(){   return tx('journal','readonly',  function(st){ return st.getAll(); }); },
+    jSuppr: function(id){ return tx('journal','readwrite', function(st){ return st.delete(id); }); }
   };
 })();
+
+/* ====================== JOURNAL DES ACTIONS ======================
+   Chaque geste est horodaté sur l'appareil, conservé même hors connexion,
+   puis versé dans l'onglet JOURNAL du classeur à la synchronisation suivante.
+   Le serveur inscrit de son côté ce qu'il constate lui-même : ces lignes-là
+   ne dépendent pas du téléphone. */
+function tracer(action, detail, numero){
+  try{
+    var moi = session();
+    return DB.jPut({
+      id: 'j-' + Date.now() + '-' + Math.random().toString(36).slice(2,8),
+      t: Date.now(),
+      action: String(action || ''),
+      detail: String(detail == null ? '' : detail).slice(0, 300),
+      numero: String(numero || ''),
+      nom: (moi && moi.nom) || ''
+    });
+  }catch(e){ return Promise.resolve(); }
+}
+
+function envoyerJournal(){
+  var moi = session();
+  if(!moi || !navigator.onLine) return Promise.resolve();
+  return DB.jTous().then(function(l){
+    if(!l.length) return;
+    l.sort(function(a,b){ return a.t - b.t; });
+    var lot = l.slice(0, 200);            // par paquets, pour ne pas saturer l'envoi
+    return poster({
+      action:'journal', nom:moi.nom, code:moi.code, appareil:APPAREIL,
+      evenements: lot.map(function(e){
+        return {t:e.t, action:e.action, detail:e.detail, numero:e.numero, nom:e.nom};
+      })
+    }).then(function(d){
+      if(!d || !d.ok) return;
+      return lot.reduce(function(p, e){
+        return p.then(function(){ return DB.jSuppr(e.id); });
+      }, Promise.resolve());
+    });
+  }, function(){}).catch(function(){});
+}
 
 /* ====================== DÉMARRAGE ====================== */
 window.addEventListener('load', function(){
@@ -178,7 +227,7 @@ function demarrer(){
     if(b && b.lignes && b.lignes.length && confirm('Un devis non terminé a été retrouvé. Le reprendre ?')){
       restaurer(b); etape(2);
     } else {
-      TYPE = null; PLUS2ANS = null; TAUX = null; majType(); etape(1);
+      apresConnexion();
     }
   }
   etatReseau();
@@ -215,6 +264,7 @@ function basculerCode(){
 
 function deconnexion(){
   if(!confirm('Se déconnecter ? Les devis déjà enregistrés restent sur l\'appareil et partiront normalement.')) return;
+  tracer('DECONNEXION', '');
   session(null);
   ecranConnexion('');
 }
@@ -269,7 +319,7 @@ function rafraichirConfig(btn){
 }
 
 /* ====================== NAVIGATION ====================== */
-var ECRANS = ['eCo','e1','e2','e3','e4','e5','e6','e7'];
+var ECRANS = ['eCo','eAccord','e1','e2','e3','e4','e5','e6','e7'];
 function montrer(id){
   ECRANS.forEach(function(k){ $(k).classList.toggle('hide', k!==id); });
 }
@@ -408,6 +458,7 @@ function attenteEchec(){
 }
 function refuser(){
   ECHECS++;
+  tracer('CONNEXION REFUSEE', 'nom saisi : ' + val('fCommercial'));
   var att = attenteEchec();
   if(att){ try{ sessionStorage.setItem('bloqueJusqua', String(Date.now() + att)); }catch(e){} }
   $('fCode').value = '';
@@ -437,11 +488,11 @@ function verifierCommercial(btn){
     ECHECS = 0;
     try{ sessionStorage.removeItem('bloqueJusqua'); }catch(e){}
     session({nom:r.nom, code:code});     // on retient l'orthographe du bureau, pas celle tapée
+    tracer('CONNEXION', navigator.onLine ? 'en ligne' : 'hors connexion');
     $('quiSuisJe').textContent = r.nom;
     $('fCode').value = '';               // le code ne traîne pas à l'écran
     if($('fCode').type === 'text') basculerCode();
-    TYPE = null; PLUS2ANS = null; TAUX = null; majType();
-    etape(1);
+    apresConnexion();
     synchroniser(false);
   }, function(){
     if(btn) libere(btn);
@@ -591,6 +642,59 @@ function appliquerSugg(i){
   if(val('cSiret')) $('mSiret').textContent = 'SIRET repris de la fiche.';
   cacherSugg();
   sauverBrouillon();
+}
+
+/* ====================== INFORMATION DU COMMERCIAL ======================
+   Le journal enregistre l'activité : chacun doit en être informé, et cette
+   information doit être prouvable. L'écran s'affiche à chaque ouverture de
+   session, et l'acceptation part dans le journal avec la version du texte lu.
+   Ce n'est pas un consentement — un salarié ne peut pas refuser un dispositif
+   légitime — mais la preuve horodatée qu'il en a bien été informé. */
+function texteInformation(){
+  var r = (CFG && CFG.reglages) || {};
+  var t = String(r.texte_information || '').trim();
+  if(!t) return '';
+  return t.replace(/\{mois\}/g, String(r.journal_retention_mois || 6));
+}
+function versionInformation(){
+  return String(((CFG && CFG.reglages) || {}).version_information || '1').trim();
+}
+
+function ecranAccord(){
+  var t = texteInformation();
+  if(!t){ etape(1); return; }          // rien à afficher : on ne bloque personne
+  ETAPE = 0;
+  montrer('eAccord');
+  $('steps').classList.add('hide');
+  $('bar').classList.add('hide');
+  $('bHist').classList.add('hide');
+  $('hTitre').textContent = 'Information';
+  $('accTexte').textContent = t;
+  $('accPied').textContent = 'Version ' + versionInformation() +
+    ' — ton acceptation est enregistrée avec la date et l\'heure.';
+  window.scrollTo(0,0);
+}
+
+function accepterInformation(btn){
+  if(btn) occuper(btn, 'Enregistrement…');
+  try{ sessionStorage.setItem('accord', versionInformation()); }catch(e){}
+  tracer('INFORMATION ACCEPTEE', 'version ' + versionInformation()).then(function(){
+    if(btn) libere(btn);
+    TYPE = null; PLUS2ANS = null; TAUX = null; majType();
+    etape(1);
+    synchroniser(false);
+  }, function(){
+    if(btn) libere(btn);
+    etape(1);
+  });
+}
+
+/* Passe par l'information si elle n'a pas encore été acceptée dans cette session. */
+function apresConnexion(){
+  var v = null;
+  try{ v = sessionStorage.getItem('accord'); }catch(e){}
+  if(v === versionInformation()) { TYPE = null; PLUS2ANS = null; TAUX = null; majType(); return etape(1); }
+  ecranAccord();
 }
 
 /* ====================== TYPE DE CLIENT ====================== */
@@ -992,6 +1096,7 @@ function ajouterPhotos(input){
     }, Promise.resolve()).then(function(){
       return DB.put(e);
     }).then(function(){
+      tracer('PHOTOS AJOUTEES', fichiers.length + ' photo' + (fichiers.length>1?'s':''), e.numero);
       rendrePhotos(e);
       synchroniser(false);
     });
@@ -1023,6 +1128,7 @@ function supprPhoto(i){
   DB.get(PHOTO_ID).then(function(e){
     if(!e || !e.photos || !e.photos[i] || e.photos[i].envoye) return;
     e.photos.splice(i,1);
+    tracer('PHOTO RETIREE', 'avant envoi', e.numero);
     return DB.put(e).then(function(){ rendrePhotos(e); });
   });
 }
@@ -1161,6 +1267,10 @@ function enregistrerSuite(b, envoi, moi, secours){
     };
     DERNIER = enr;
     DB.put(enr).then(function(){
+      var cl = devis.client.societe || devis.client.contact || '';
+      tracer('DEVIS CREE', cl + ' — ' + eur(devis.totaux.ttc) + ' TTC — TVA ' +
+             (TAUX || '?') + ' %', devis.numero);
+      if(devis.signature) tracer('SIGNATURE CLIENT', devis.signataire || cl, devis.numero);
       lsj('brouillon', null);
       chargerRepertoire();
       $('okNum').textContent = devis.numero;
@@ -1189,6 +1299,7 @@ function b64versBlob(b64){
 }
 function partager(enr){
   if(!enr || !enr.pdf) return;
+  tracer('PDF PARTAGE', enr.nomFichier || '', enr.numero);
   var blob = b64versBlob(enr.pdf);
   var f;
   try{ f = new File([blob], enr.nomFichier, {type:'application/pdf'}); }catch(e){ f=null; }
@@ -1240,14 +1351,16 @@ function synchroniser(manuel, btn){
     var att = l.filter(function(x){
       return x.statut==='attente' || (x.photos||[]).some(function(p){ return !p.envoye; });
     });
-    if(!att.length){ SYNC = false; if(btn) libere(btn); etatReseau(); if(ETAPE===6) rendreHistorique(); return; }
+    if(!att.length){ SYNC = false; if(btn) libere(btn); etatReseau();
+      if(ETAPE===6) rendreHistorique(); envoyerJournal(); return; }
     etatReseau(null, 'Envoi de '+att.length+' devis…', 'att');
     var suite = Promise.resolve();
     att.forEach(function(enr){ suite = suite.then(function(){ return envoyer(enr); }); });
     suite.then(function(){
       SYNC = false; if(btn) libere(btn);
       etatReseau(); if(ETAPE===6) rendreHistorique(); majEtatDernier(); majEcranPhotos(); purger();
-    }, function(){ SYNC = false; if(btn) libere(btn); etatReseau(); majEcranPhotos(); });
+      envoyerJournal();
+    }, function(){ SYNC = false; if(btn) libere(btn); etatReseau(); majEcranPhotos(); envoyerJournal(); });
   }, function(){ SYNC = false; if(btn) libere(btn); });
 }
 
@@ -1400,6 +1513,7 @@ function renvoyer(id, btn){
   DB.get(id).then(function(e){
     if(!e){ if(btn) libere(btn); return; }
     e.statut = 'attente'; delete e.derniereErreur;
+    tracer('RENVOI DEMANDE', '', e.numero);
     return DB.put(e).then(function(){ rendreHistorique(); synchroniser(true); });  // le rendu recrée le bouton
   });
 }
@@ -1420,6 +1534,7 @@ function dupliquer(id, btn){
     ['Societe','Siret','Tva','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
       $('c'+k).value = c[k.toLowerCase()] || '';
     });
+    tracer('DEVIS DUPLIQUE', 'repris de ' + e.numero, e.numero);
     LIGNES = (d.lignes||[]).map(function(l){
       var o = {}; for(var k in l){ if(l.hasOwnProperty(k)) o[k] = l[k]; } return o;
     });

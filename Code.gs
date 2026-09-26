@@ -14,8 +14,13 @@ var SH = {
   CATALOGUE: 'CATALOGUE',
   COMMERCIAUX: 'COMMERCIAUX',
   DEVIS: 'DEVIS',
-  LIGNES: 'LIGNES'
+  LIGNES: 'LIGNES',
+  JOURNAL: 'JOURNAL'
 };
+
+var ENTETES_JOURNAL_ = [
+  'HORODATAGE', 'MOMENT', 'COMMERCIAL', 'ACTION', 'DETAIL', 'NUMERO', 'APPAREIL', 'SOURCE'
+];
 
 /* ============================ MENU ============================ */
 
@@ -29,6 +34,7 @@ function onOpen() {
     .addItem('5. Tester (devis fictif)', 'testerDevis')
     .addItem('6. Mettre à jour la structure du fichier', 'majStructure')
     .addItem('7. Charger la grille de prix', 'chargerGrillePrix')
+    .addItem('8. Purger le journal des actions', 'purgerJournal')
     .addToUi();
 }
 
@@ -93,6 +99,7 @@ function initialiser() {
   creerOnglet_(ss, SH.COMMERCIAUX, ['NOM', 'EMAIL', 'CODE', 'ACTIF']);
   creerOnglet_(ss, SH.DEVIS, ENTETES_DEVIS_);
   creerOnglet_(ss, SH.LIGNES, ENTETES_LIGNES_);
+  creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_);
 
   var reg = ss.getSheetByName(SH.REGLAGES);
   if (reg.getLastRow() < 2) {
@@ -193,6 +200,8 @@ function majStructure_() {
     });
   }
 
+  creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_);
+
   var reg = lireReglages_(), shR = ss.getSheetByName(SH.REGLAGES);
   if (shR) {
     REGLAGES_DEFAUT_.forEach(function (r) {
@@ -203,7 +212,8 @@ function majStructure_() {
     var aRemplir = ['societe_tel', 'societe_email', 'societe_site', 'societe_capital',
                     'banque_nom', 'banque_iban', 'banque_bic', 'conditions_paiement',
                     'paiement_pct', 'clause_reserve', 'mentions_penalites',
-                    'mention_manuscrite', 'bordereau_retractation'];
+                    'mention_manuscrite', 'bordereau_retractation',
+                    'texte_information', 'version_information', 'journal_retention_mois'];
     REGLAGES_DEFAUT_.forEach(function (r) {
       if (aRemplir.indexOf(r[0]) < 0) return;
       if (String(reg[r[0]] === undefined ? '' : reg[r[0]]).trim() !== '') return;
@@ -240,6 +250,9 @@ var REGLAGES_DEFAUT_ = [
   ['clause_reserve', 'CLAUSE DE RÉSERVE DE PROPRIÉTÉ : Conformément à la loi 80.335 du 12 mai 1980, nous réservons la propriété des produits et marchandises, objets des présents débits, jusqu\'au paiement de l\'intégralité du prix et de ses accessoires. En cas de non paiement total ou partiel du prix de l\'échéance pour quelque cause que ce soit, de convention expresse, nous nous réservons la faculté, sans formalités, de reprendre matériellement possession de ces produits ou marchandises à vos frais, risques et périls.', 'Bas de page'],
   ['mentions_penalites', 'Pénalité de retard : 3 fois le taux d\'intérêt légal après date d\'échéance. Escompte pour règlement anticipé : 0 % (sauf condition particulière définie dans les conditions de règlement). Le montant de l\'indemnité forfaitaire pour frais de recouvrement prévue au douzième alinéa de l\'article L441-6 est fixé à 40 euros en matière commerciale.', 'Bas de page'],
   ['mentions_credit_impot', '', 'Crédit d\'impôt services à la personne — à ne remplir qu\'une fois la déclaration SAP obtenue'],
+  ['journal_retention_mois', '6', 'Durée de conservation du journal des actions, en mois'],
+  ['texte_information', 'L\'application enregistre, à chaque utilisation : les connexions et les tentatives de connexion, la création et la signature des devis, l\'ajout de photos, le partage des documents. Chaque enregistrement porte la date, l\'heure, le nom du commercial et l\'appareil utilisé.\n\nCes informations servent au suivi commercial, à la traçabilité des devis remis aux clients et à la sécurité de l\'accès aux tarifs de l\'entreprise. Elles sont conservées {mois} mois, puis effacées. Seule la direction de BREIZH BRILLANCE y a accès.\n\nConformément au règlement général sur la protection des données, tu peux demander à consulter les informations qui te concernent et faire rectifier une erreur, en écrivant à breizhbrillance@gmail.com.', 'Texte affiché à chaque connexion — {mois} est remplacé par la durée de conservation'],
+  ['version_information', '1', 'À incrémenter dès que le texte ci-dessus change : chacun devra l\'accepter de nouveau'],
   ['assurance_rc', '', 'Assurance responsabilité civile professionnelle : assureur, adresse, couverture géographique'],
   ['mediateur', '', 'Médiateur de la consommation : nom, adresse et site — obligatoire face à un particulier'],
   ['mention_manuscrite', 'Bon pour accord', 'Mention que le client recopie avant de signer'],
@@ -353,7 +366,7 @@ function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
     var d = JSON.parse(e.postData.contents);
-    var actions = ['connexion', 'config', 'sync', 'photo'];
+    var actions = ['connexion', 'config', 'sync', 'photo', 'journal'];
     if (actions.indexOf(d.action) < 0) return reponse_({ ok: false, erreur: 'action inconnue' });
 
     // Un seul et même refus, que le nom soit inconnu ou le code faux.
@@ -363,11 +376,23 @@ function doPost(e) {
     var com = trouverCommercial_(d.nom);
     if (!com || (com.code && String(d.code || '') !== com.code)) {
       noterEchec_(d.nom);
+      // On ne journalise que les noms qui existent : sinon, n'importe qui
+      // pourrait remplir le journal en essayant des noms au hasard.
+      if (com) tracerServeur_(com.nom, 'CODE REFUSE', '', '', d.appareil || '');
       return reponse_({ ok: false, refus: true, erreur: 'Nom ou code incorrect' });
     }
 
     if (d.action === 'connexion') {
+      tracerServeur_(com.nom, 'CONNEXION VALIDEE', '', '', d.appareil || '');
       return reponse_({ ok: true, nom: com.nom, config: config_() });
+    }
+    if (d.action === 'journal') {
+      var evs = (d.evenements || []).slice(0, 300).map(function (e) {
+        return { t: e.t, nom: e.nom || com.nom, action: e.action, detail: e.detail,
+                 numero: e.numero, appareil: d.appareil || '', source: 'APPAREIL' };
+      });
+      tracer_(evs);
+      return reponse_({ ok: true, recus: evs.length });
     }
     if (d.action === 'config') return reponse_({ ok: true, config: config_() });
     if (d.action === 'photo') return reponse_(enregistrerPhoto_(d));
@@ -513,6 +538,12 @@ function enregistrer_(d, com) {
     }
   } catch (eMail) { /* un mail raté ne doit pas faire échouer la synchro */ }
 
+  tracerServeur_(devis.commercial, 'DEVIS RECU',
+    (c.societe || c.contact || '') + ' — ' + eur_(t.ttc) + ' TTC' +
+    (devis.signature ? ' — signé' : ' — non signé') +
+    (renumerote ? ' — renuméroté depuis ' + renumerote : ''),
+    devis.numero, d.appareil || '');
+
   return { ok: true, doublon: false, numero: devis.numero, pdfUrl: lienPdf,
            renumerote: renumerote || undefined };
 }
@@ -538,6 +569,8 @@ function enregistrerPhoto_(d) {
   var blob = Utilities.newBlob(Utilities.base64Decode(d.image), 'image/jpeg', nom);
   var f = dossier.createFile(blob);
   noterPhotos_(d.numero, dossier);
+  tracerServeur_(d.commercial || '', 'PHOTO RECUE', 'photo ' + n + ' sur ' + (d.total || n),
+                 d.numero, d.appareil || '');
   return { ok: true, url: f.getUrl() };
 }
 
@@ -563,6 +596,61 @@ function noterPhotos_(numero, dossier) {
       }
     }
   } catch (e) { /* le comptage ne doit jamais faire échouer l'envoi */ }
+}
+
+/* ============================ JOURNAL ============================
+   Deux origines. APPAREIL : ce que le téléphone déclare avoir fait, y compris
+   hors connexion — utile, mais écrit par l'appareil. SERVEUR : ce que le
+   classeur constate lui-même à la réception, qui ne dépend d'aucun téléphone.
+   La colonne SOURCE permet de faire la différence. */
+function tracer_(lignes) {
+  if (!lignes || !lignes.length) return;
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sh = ss.getSheetByName(SH.JOURNAL) || creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_);
+    var en = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+      .map(function (x) { return String(x).trim(); });
+    var recu = new Date();
+    var rows = lignes.map(function (l) {
+      var v = {
+        HORODATAGE: recu,
+        MOMENT: l.t ? new Date(Number(l.t)) : recu,
+        COMMERCIAL: String(l.nom || ''),
+        ACTION: String(l.action || ''),
+        DETAIL: String(l.detail || '').slice(0, 300),
+        NUMERO: String(l.numero || ''),
+        APPAREIL: String(l.appareil || ''),
+        SOURCE: String(l.source || 'APPAREIL')
+      };
+      return en.map(function (h) { return v.hasOwnProperty(h) ? v[h] : ''; });
+    });
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, en.length).setValues(rows);
+  } catch (e) { /* le journal ne doit jamais faire échouer une opération */ }
+}
+
+/** Raccourci pour une seule ligne constatée par le serveur. */
+function tracerServeur_(nom, action, detail, numero, appareil) {
+  tracer_([{ t: Date.now(), nom: nom, action: action, detail: detail,
+             numero: numero, appareil: appareil, source: 'SERVEUR' }]);
+}
+
+/** Efface les lignes du journal plus anciennes que la durée de conservation. */
+function purgerJournal() {
+  var mois = Number(lireReglages_().journal_retention_mois) || 6;
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.JOURNAL);
+  if (!sh || sh.getLastRow() < 2) {
+    return SpreadsheetApp.getUi().alert('Journal vide.');
+  }
+  var limite = new Date();
+  limite.setMonth(limite.getMonth() - mois);
+  var dates = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+  var n = 0;
+  while (n < dates.length && dates[n][0] instanceof Date && dates[n][0] < limite) n++;
+  if (!n) {
+    return SpreadsheetApp.getUi().alert('Rien à effacer : aucune ligne de plus de ' + mois + ' mois.');
+  }
+  sh.deleteRows(2, n);
+  SpreadsheetApp.getUi().alert(n + ' ligne(s) de plus de ' + mois + ' mois effacée(s) du journal.');
 }
 
 /* ========================== LECTURES ========================== */
