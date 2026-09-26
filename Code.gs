@@ -15,7 +15,9 @@ var SH = {
   COMMERCIAUX: 'COMMERCIAUX',
   DEVIS: 'DEVIS',
   LIGNES: 'LIGNES',
-  JOURNAL: 'JOURNAL'
+  JOURNAL: 'JOURNAL',
+  FACTURER: 'A FACTURER',
+  BORD: 'TABLEAU DE BORD'
 };
 
 var ENTETES_JOURNAL_ = [
@@ -35,6 +37,10 @@ function onOpen() {
     .addItem('6. Mettre à jour la structure du fichier', 'majStructure')
     .addItem('7. Charger la grille de prix', 'chargerGrillePrix')
     .addItem('8. Purger le journal des actions', 'purgerJournal')
+    .addSeparator()
+    .addItem('9. Rafraîchir « À facturer » et le tableau de bord', 'rafraichirSuivi')
+    .addItem('10. Activer le rappel quotidien aux commerciaux', 'activerAutomate')
+    .addItem('11. Arrêter le rappel quotidien', 'arreterAutomate')
     .addToUi();
 }
 
@@ -144,8 +150,16 @@ var ENTETES_DEVIS_ = [
   'CONTACT', 'TELEPHONE', 'EMAIL', 'ADRESSE', 'CP', 'VILLE',
   'TOTAL_HT_PONCTUEL', 'TOTAL_HT_MENSUEL', 'TOTAL_HT', 'TOTAL_TVA', 'TOTAL_TTC',
   'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE', 'VALIDITE', 'LIEN_PDF', 'PHOTOS', 'NOTES',
-  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS', 'OBJET', 'LOGEMENT_PLUS_2_ANS', 'TAUX_TVA', 'DELAI'
+  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS', 'OBJET', 'LOGEMENT_PLUS_2_ANS', 'TAUX_TVA', 'DELAI',
+  'MOTIF_REFUS', 'RELANCE_LE', 'DATE_STATUT', 'PREUVE_SIGNATURE'
 ];
+
+/* Les états qu'un devis peut prendre, dans l'ordre de la vie réelle.
+   REMIS : imprimé et laissé au client, résultat encore inconnu.
+   SIGNE : accepté — la preuve est la photo du papier signé.
+   A RELANCER : le client réfléchit, une date de relance est posée.
+   REFUSE : perdu, avec son motif. EXPIRE : validité dépassée sans réponse. */
+var STATUTS_ = ['REMIS', 'SIGNE', 'A RELANCER', 'REFUSE', 'EXPIRE'];
 
 var ENTETES_LIGNES_ = [
   'NUMERO', 'ORDRE', 'CATEGORIE', 'REFERENCE', 'DESIGNATION', 'DETAIL', 'QTE', 'UNITE',
@@ -201,6 +215,23 @@ function majStructure_() {
   }
 
   creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_);
+  creerOnglet_(ss, SH.FACTURER, ENTETES_FACTURER_);
+
+  // Liste déroulante sur STATUT : le gérant peut corriger un état à la main
+  // sans risquer une faute de frappe que les comptes ne reconnaîtraient pas.
+  try {
+    if (shD) {
+      var enS = shD.getRange(1, 1, 1, shD.getLastColumn()).getValues()[0]
+        .map(function (x) { return String(x).trim(); });
+      var cS = enS.indexOf('STATUT');
+      if (cS >= 0) {
+        shD.getRange(2, cS + 1, Math.max(shD.getMaxRows() - 1, 1), 1).setDataValidation(
+          SpreadsheetApp.newDataValidation().requireValueInList(STATUTS_, true)
+            .setAllowInvalid(true).build());
+      }
+    }
+  } catch (eS) {}
+
   formaterDates_(ss);
 
   var reg = lireReglages_(), shR = ss.getSheetByName(SH.REGLAGES);
@@ -252,6 +283,9 @@ var REGLAGES_DEFAUT_ = [
   ['mentions_penalites', 'Pénalité de retard : 3 fois le taux d\'intérêt légal après date d\'échéance. Escompte pour règlement anticipé : 0 % (sauf condition particulière définie dans les conditions de règlement). Le montant de l\'indemnité forfaitaire pour frais de recouvrement prévue au douzième alinéa de l\'article L441-6 est fixé à 40 euros en matière commerciale.', 'Bas de page'],
   ['mentions_credit_impot', '', 'Crédit d\'impôt services à la personne — à ne remplir qu\'une fois la déclaration SAP obtenue'],
   ['journal_retention_mois', '6', 'Durée de conservation du journal des actions, en mois'],
+  ['recap_email', '', 'Adresse qui reçoit le récapitulatif — vide : le propriétaire du fichier'],
+  ['rappel_sans_resultat_jours', '2', 'Au bout de combien de jours un devis sans résultat est rappelé'],
+  ['recap_jour', '1', 'Jour du récapitulatif hebdomadaire — 1 lundi … 7 dimanche'],
   ['texte_information', 'L\'application enregistre, à chaque utilisation : les connexions et les tentatives de connexion, la création et la signature des devis, l\'ajout de photos, le partage des documents. Chaque enregistrement porte la date, l\'heure, le nom du commercial et l\'appareil utilisé.\n\nCes informations servent au suivi commercial, à la traçabilité des devis remis aux clients et à la sécurité de l\'accès aux tarifs de l\'entreprise. Elles sont conservées {mois} mois, puis effacées. Seule la direction de BREIZH BRILLANCE y a accès.\n\nConformément au règlement général sur la protection des données, tu peux demander à consulter les informations qui te concernent et faire rectifier une erreur, en écrivant à breizhbrillance@gmail.com.', 'Texte affiché à chaque connexion — {mois} est remplacé par la durée de conservation'],
   ['version_information', '1', 'À incrémenter dès que le texte ci-dessus change : chacun devra l\'accepter de nouveau'],
   ['assurance_rc', '', 'Assurance responsabilité civile professionnelle : assureur, adresse, couverture géographique'],
@@ -367,7 +401,7 @@ function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
     var d = JSON.parse(e.postData.contents);
-    var actions = ['connexion', 'config', 'sync', 'photo', 'journal'];
+    var actions = ['connexion', 'config', 'sync', 'photo', 'journal', 'statut'];
     if (actions.indexOf(d.action) < 0) return reponse_({ ok: false, erreur: 'action inconnue' });
 
     // Un seul et même refus, que le nom soit inconnu ou le code faux.
@@ -397,6 +431,7 @@ function doPost(e) {
     }
     if (d.action === 'config') return reponse_({ ok: true, config: config_() });
     if (d.action === 'photo') return reponse_(enregistrerPhoto_(d));
+    if (d.action === 'statut') return reponse_(enregistrerStatut_(d, com));
 
     lock.waitLock(30000);
     var res = enregistrer_(d, com);
@@ -485,8 +520,9 @@ function enregistrer_(d, com) {
     TOTAL_HT_PONCTUEL: t.htPonctuel || 0, TOTAL_HT_MENSUEL: t.htMensuel || 0,
     TOTAL_HT: t.ht || 0, TOTAL_TVA: t.tva || 0, TOTAL_TTC: t.ttc || 0,
     REMISE_PCT: devis.remise || 0,
-    STATUT: devis.signature ? 'SIGNE' : 'EN ATTENTE',
+    STATUT: devis.signature ? 'SIGNE' : 'REMIS',
     SIGNE: devis.signature ? 'OUI' : 'NON',
+    DATE_STATUT: devis.signature ? new Date() : '',
     SIGNATAIRE: devis.signataire || '', VALIDITE: new Date(devis.validite), LIEN_PDF: lienPdf,
     NOTES: (devis.notes || '') +
       (renumerote ? ' [numéro d\'origine sur le PDF du client : ' + renumerote + ']' : ''),
@@ -559,20 +595,85 @@ function enregistrerPhoto_(d) {
   var reg = lireReglages_();
   var dossier = dossierDevis_(reg, new Date(d.date), d.commercial);
 
+  var signee = (String(d.type || '') === 'SIGNE');
   var n = Number(d.index) || 1;
-  var nom = 'Devis-' + String(d.numero || 'sans-numero') + '-photo-' +
-            ('0' + n).slice(-2) + '.jpg';
+  var nom = 'Devis-' + String(d.numero || 'sans-numero') +
+            (signee ? '-signe-' : '-photo-') + ('0' + n).slice(-2) + '.jpg';
 
   // déjà reçue ? (l'appareil peut réessayer après une coupure de réseau)
   var it = dossier.getFilesByName(nom);
-  if (it.hasNext()) return { ok: true, doublon: true, url: it.next().getUrl() };
+  if (it.hasNext()) {
+    var dej = it.next();
+    if (signee) majDevis_(d.numero, { PREUVE_SIGNATURE: dej.getUrl() });
+    return { ok: true, doublon: true, url: dej.getUrl() };
+  }
 
   var blob = Utilities.newBlob(Utilities.base64Decode(d.image), 'image/jpeg', nom);
   var f = dossier.createFile(blob);
-  noterPhotos_(d.numero, dossier);
-  tracerServeur_(d.commercial || '', 'PHOTO RECUE', 'photo ' + n + ' sur ' + (d.total || n),
+  if (signee) majDevis_(d.numero, { PREUVE_SIGNATURE: f.getUrl() });
+  else noterPhotos_(d.numero, dossier);
+  tracerServeur_(d.commercial || '',
+                 signee ? 'PREUVE SIGNATURE RECUE' : 'PHOTO RECUE',
+                 (signee ? 'page ' : 'photo ') + n + ' sur ' + (d.total || n),
                  d.numero, d.appareil || '');
   return { ok: true, url: f.getUrl() };
+}
+
+/**
+ * Écrit quelques cellules d'un devis déjà enregistré, repéré par son numéro.
+ * Les colonnes sont désignées par leur nom : l'ordre réel du classeur peut
+ * changer, un numéro de colonne codé en dur finirait par écrire à côté.
+ */
+function majDevis_(numero, valeurs) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.DEVIS);
+  if (!sh || sh.getLastRow() < 2) return false;
+  var en = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+    .map(function (x) { return String(x).trim(); });
+  var cNum = en.indexOf('NUMERO');
+  if (cNum < 0) return false;
+  var nums = sh.getRange(2, cNum + 1, sh.getLastRow() - 1, 1).getValues();
+  for (var i = 0; i < nums.length; i++) {
+    if (String(nums[i][0]).trim() !== String(numero).trim()) continue;
+    for (var k in valeurs) {
+      if (!valeurs.hasOwnProperty(k)) continue;
+      var c = en.indexOf(k);
+      if (c >= 0) sh.getRange(i + 2, c + 1).setValue(valeurs[k]);
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Résultat du rendez-vous, tel que le commercial l'a saisi sur place.
+ * Le devis est signé sur le papier imprimé : sans cette réponse, le classeur
+ * ne saurait jamais ce qu'un devis est devenu. Toujours corrigeable : la
+ * dernière réponse reçue remplace la précédente, et le journal garde les deux.
+ */
+function enregistrerStatut_(d, com) {
+  var num = String(d.numero || '').trim();
+  if (!num) return { ok: false, erreur: 'numéro manquant' };
+
+  var statut = { SIGNE: 'SIGNE', RELANCE: 'A RELANCER', REFUSE: 'REFUSE' }[String(d.verdict || '')];
+  if (!statut) return { ok: false, erreur: 'résultat inconnu' };
+
+  var quand = d.quand ? new Date(Number(d.quand)) : new Date();
+  var v = {
+    STATUT: statut,
+    DATE_STATUT: quand,
+    MOTIF_REFUS: statut === 'REFUSE' ? String(d.motif || '') : '',
+    RELANCE_LE: statut === 'A RELANCER' && d.relance ? new Date(d.relance + 'T09:00:00') : '',
+    SIGNE: statut === 'SIGNE' ? 'OUI' : 'NON'
+  };
+  var trouve = majDevis_(num, v);
+
+  tracerServeur_(com ? com.nom : (d.nom || ''), 'RESULTAT ' + statut,
+                 v.MOTIF_REFUS || (d.relance ? 'relance le ' + d.relance : ''),
+                 num, d.appareil || '');
+
+  // Le devis n'est pas encore arrivé : l'appareil réessaiera au prochain envoi.
+  if (!trouve) return { ok: false, erreur: 'devis introuvable dans le classeur' };
+  return { ok: true, statut: statut };
 }
 
 /** Compte les photos rattachées à un devis et l'écrit dans la colonne PHOTOS. */
@@ -587,7 +688,7 @@ function noterPhotos_(numero, dossier) {
 
     var n = 0, it = dossier.getFiles();
     while (it.hasNext()) {
-      if (it.next().getName().indexOf('Devis-' + numero + '-photo-') === 0) n++;
+      if (it.next().getName().indexOf('Devis-' + numero + '-photo-') === 0) n++;   // hors -signe-
     }
     var nums = sh.getRange(2, cNum + 1, sh.getLastRow() - 1, 1).getValues();
     for (var i = 0; i < nums.length; i++) {
@@ -637,7 +738,9 @@ function tracer_(lignes) {
 function formaterDates_(ss) {
   try {
     [[SH.JOURNAL, ['HORODATAGE', 'MOMENT'], 'dd/mm/yyyy HH:mm:ss', 145],
-     [SH.DEVIS,   ['RECU_LE'],              'dd/mm/yyyy HH:mm',    130]
+     [SH.DEVIS,   ['RECU_LE', 'DATE_STATUT'], 'dd/mm/yyyy HH:mm',  130],
+     [SH.DEVIS,   ['RELANCE_LE'],           'dd/mm/yyyy',          105],
+     [SH.FACTURER, ['DATE_SIGNATURE'],      'dd/mm/yyyy',          105]
     ].forEach(function (cfg) {
       var sh = ss.getSheetByName(cfg[0]);
       if (!sh || sh.getLastColumn() < 1) return;
@@ -808,3 +911,417 @@ function testerDevis() {
   SpreadsheetApp.getUi().alert('Test terminé : ' + JSON.stringify(res) +
     '\n\nPense à supprimer la ligne de test dans les onglets DEVIS et LIGNES.');
 }
+
+/* ================================================================
+   SUIVI : « À FACTURER », TABLEAU DE BORD, RAPPEL QUOTIDIEN
+
+   Le devis est imprimé et signé sur le papier chez le client : c'est le
+   commercial qui dit, depuis son téléphone, ce que le rendez-vous a donné.
+   À partir de cette seule réponse, le classeur fabrique tout le reste —
+   la liste à refacturer dans Henrri, les chiffres, et les rappels.
+   Aucun message n'est jamais envoyé au client : seulement aux commerciaux
+   et au gérant.
+   ================================================================ */
+
+var ENTETES_FACTURER_ = [
+  'DATE_SIGNATURE', 'NUMERO', 'COMMERCIAL', 'CLIENT', 'TYPE_CLIENT',
+  'SIRET_CLIENT', 'TVA_CLIENT', 'CONTACT', 'EMAIL', 'TELEPHONE',
+  'ADRESSE', 'CP', 'VILLE', 'TAUX_TVA', 'TOTAL_HT', 'TOTAL_TVA', 'TOTAL_TTC',
+  'PRESTATIONS', 'LIEN_PDF', 'DEVIS_SIGNE', 'FACTURE'
+];
+
+/** Lit l'onglet DEVIS sous forme d'objets, colonnes désignées par leur nom. */
+function lireDevis_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.DEVIS);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var v = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues();
+  var en = v[0].map(function (x) { return String(x).trim(); });
+  var out = [];
+  for (var i = 1; i < v.length; i++) {
+    if (!String(v[i][en.indexOf('NUMERO')] || '').trim()) continue;
+    var o = { _ligne: i + 1 };
+    en.forEach(function (h, c) { if (h) o[h] = v[i][c]; });
+    out.push(o);
+  }
+  return out;
+}
+
+/** Les lignes de prestation, regroupées par numéro de devis. */
+function lignesParDevis_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.LIGNES);
+  var out = {};
+  if (!sh || sh.getLastRow() < 2) return out;
+  var v = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues();
+  var en = v[0].map(function (x) { return String(x).trim(); });
+  var cN = en.indexOf('NUMERO');
+  for (var i = 1; i < v.length; i++) {
+    var n = String(v[i][cN] || '').trim();
+    if (!n) continue;
+    var o = {};
+    en.forEach(function (h, c) { if (h) o[h] = v[i][c]; });
+    (out[n] = out[n] || []).push(o);
+  }
+  return out;
+}
+
+/** Une ligne de prestation en une phrase, prête à être resaisie dans Henrri. */
+function prestationTexte_(l) {
+  var q = Number(l.QTE) || 0, pu = Number(l.PU_HT) || 0;
+  var t = (q !== 1 ? nb_(q) + ' ' + (l.UNITE || '') + ' × ' : '') +
+          String(l.DESIGNATION || '').trim();
+  if (l.DETAIL) t += ' (' + String(l.DETAIL).trim() + ')';
+  t += ' — ' + nb_(pu) + ' € HT';
+  if (Number(l.REMISE_PCT) > 0) t += ' − ' + nb_(l.REMISE_PCT) + ' %';
+  t += ' = ' + nb_(l.TOTAL_HT) + ' € HT';
+  if (String(l.TYPE || '') === 'MENSUEL') t += ' / mois';
+  return t;
+}
+function nb_(x) {
+  var n = Number(x) || 0;
+  return (Math.round(n * 100) / 100).toFixed(2).replace('.', ',').replace(/,00$/, '');
+}
+function jour0_(d) {
+  var x = new Date(d); x.setHours(0, 0, 0, 0); return x;
+}
+function estVide_(x) { return x === '' || x === null || x === undefined; }
+
+/**
+ * Reconstruit « À FACTURER » : une ligne par devis signé, avec tout ce qu'il
+ * faut pour la resaisir dans Henrri. Les cases FACTURE déjà cochées sont
+ * conservées — c'est la seule colonne que le gérant remplit à la main.
+ */
+function majAFacturer_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SH.FACTURER) || creerOnglet_(ss, SH.FACTURER, ENTETES_FACTURER_);
+
+  // mémoriser les cases déjà cochées avant de réécrire
+  var deja = {};
+  if (sh.getLastRow() > 1) {
+    var av = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues();
+    var enAv = av[0].map(function (x) { return String(x).trim(); });
+    var cNum = enAv.indexOf('NUMERO'), cFac = enAv.indexOf('FACTURE');
+    if (cNum >= 0 && cFac >= 0) {
+      for (var i = 1; i < av.length; i++) {
+        var k = String(av[i][cNum] || '').trim();
+        if (k) deja[k] = av[i][cFac] === true || String(av[i][cFac]).toUpperCase() === 'OUI';
+      }
+    }
+  }
+
+  var lp = lignesParDevis_();
+  var lignes = lireDevis_()
+    .filter(function (d) { return String(d.STATUT || '').toUpperCase() === 'SIGNE'; })
+    .sort(function (a, b) {
+      return new Date(a.DATE_STATUT || a.DATE || 0) - new Date(b.DATE_STATUT || b.DATE || 0);
+    })
+    .map(function (d) {
+      var num = String(d.NUMERO).trim();
+      var pres = (lp[num] || []).map(prestationTexte_).join('\n');
+      var v = {
+        DATE_SIGNATURE: d.DATE_STATUT || d.DATE || '',
+        NUMERO: num, COMMERCIAL: d.COMMERCIAL || '', CLIENT: d.CLIENT || '',
+        TYPE_CLIENT: d.TYPE_CLIENT || '', SIRET_CLIENT: d.SIRET_CLIENT || '',
+        TVA_CLIENT: d.TVA_CLIENT || '', CONTACT: d.CONTACT || '',
+        EMAIL: d.EMAIL || '', TELEPHONE: d.TELEPHONE || '',
+        ADRESSE: d.ADRESSE || '', CP: d.CP || '', VILLE: d.VILLE || '',
+        TAUX_TVA: d.TAUX_TVA || '', TOTAL_HT: Number(d.TOTAL_HT) || 0,
+        TOTAL_TVA: Number(d.TOTAL_TVA) || 0, TOTAL_TTC: Number(d.TOTAL_TTC) || 0,
+        PRESTATIONS: pres, LIEN_PDF: d.LIEN_PDF || '',
+        DEVIS_SIGNE: d.PREUVE_SIGNATURE || '',
+        FACTURE: deja[num] === true
+      };
+      return ENTETES_FACTURER_.map(function (h) { return v[h]; });
+    });
+
+  if (sh.getMaxRows() > 1) sh.getRange(2, 1, sh.getMaxRows() - 1, sh.getMaxColumns()).clearContent();
+  sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), ENTETES_FACTURER_.length)
+    .clearDataValidations();
+  if (lignes.length) {
+    sh.getRange(2, 1, lignes.length, ENTETES_FACTURER_.length).setValues(lignes);
+    var cF = ENTETES_FACTURER_.indexOf('FACTURE') + 1;
+    sh.getRange(2, cF, lignes.length, 1)
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+    sh.getRange(2, ENTETES_FACTURER_.indexOf('PRESTATIONS') + 1, lignes.length, 1)
+      .setWrap(true).setVerticalAlignment('top');
+  }
+  sh.setColumnWidth(ENTETES_FACTURER_.indexOf('PRESTATIONS') + 1, 340);
+  sh.setFrozenRows(1);
+  return lignes.length;
+}
+
+/**
+ * Tableau de bord : ce qui a été devisé, ce qui a été signé, et où ça se perd.
+ * Des valeurs, pas des formules : le classeur reste lisible et ne casse pas
+ * quand une ligne est déplacée à la main.
+ */
+function majTableauDeBord_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SH.BORD) || ss.insertSheet(SH.BORD);
+  sh.clear();
+
+  var devis = lireDevis_();
+  var parMois = {}, parCom = {}, motifs = {}, etats = {};
+  var totHt = 0, totSigne = 0, recurrent = 0;
+
+  devis.forEach(function (d) {
+    var dt = d.DATE ? new Date(d.DATE) : null;
+    var cle = dt ? dt.getFullYear() + '-' + ('0' + (dt.getMonth() + 1)).slice(-2) : '—';
+    var st = String(d.STATUT || 'REMIS').toUpperCase();
+    var ht = Number(d.TOTAL_HT) || 0;
+    var mens = Number(d.TOTAL_HT_MENSUEL) || 0;
+    var signe = (st === 'SIGNE');
+
+    etats[st] = (etats[st] || 0) + 1;
+    totHt += ht;
+    if (signe) { totSigne += ht; recurrent += mens; }
+    if (st === 'REFUSE') {
+      var m = String(d.MOTIF_REFUS || 'non précisé').trim() || 'non précisé';
+      motifs[m] = (motifs[m] || 0) + 1;
+    }
+    [[parMois, cle], [parCom, String(d.COMMERCIAL || '—')]].forEach(function (x) {
+      var b = x[0][x[1]] = x[0][x[1]] || { n: 0, ht: 0, ns: 0, hts: 0, mens: 0 };
+      b.n++; b.ht += ht;
+      if (signe) { b.ns++; b.hts += ht; b.mens += mens; }
+    });
+  });
+
+  var L = [];
+  L.push(['TABLEAU DE BORD', '', '', '', '', '']);
+  L.push(['Mis à jour le', Utilities.formatDate(new Date(), 'Europe/Paris', 'dd/MM/yyyy HH:mm'), '', '', '', '']);
+  L.push(['', '', '', '', '', '']);
+  L.push(['Ensemble', '', '', '', '', '']);
+  L.push(['Devis établis', devis.length, '', 'Total devisé HT', Math.round(totHt * 100) / 100, '']);
+  L.push(['Devis signés', etats['SIGNE'] || 0, '', 'Total signé HT', Math.round(totSigne * 100) / 100, '']);
+  L.push(['Taux de transformation',
+          devis.length ? Math.round((etats['SIGNE'] || 0) / devis.length * 1000) / 10 + ' %' : '—',
+          '', 'Récurrent mensuel HT signé', Math.round(recurrent * 100) / 100, '']);
+  L.push(['', '', '', '', '', '']);
+
+  L.push(['Où en sont les devis', '', '', '', '', '']);
+  L.push(['État', 'Nombre', '', '', '', '']);
+  STATUTS_.forEach(function (st) { if (etats[st]) L.push([st, etats[st], '', '', '', '']); });
+  Object.keys(etats).forEach(function (st) {
+    if (STATUTS_.indexOf(st) < 0) L.push([st, etats[st], '', '', '', '']);
+  });
+  L.push(['', '', '', '', '', '']);
+
+  L.push(['Par commercial', '', '', '', '', '']);
+  L.push(['Commercial', 'Devis', 'Signés', 'Transformation', 'Devisé HT', 'Signé HT']);
+  Object.keys(parCom).sort().forEach(function (k) {
+    var b = parCom[k];
+    L.push([k, b.n, b.ns, b.n ? Math.round(b.ns / b.n * 1000) / 10 + ' %' : '—',
+            Math.round(b.ht * 100) / 100, Math.round(b.hts * 100) / 100]);
+  });
+  L.push(['', '', '', '', '', '']);
+
+  L.push(['Par mois', '', '', '', '', '']);
+  L.push(['Mois', 'Devis', 'Signés', 'Transformation', 'Devisé HT', 'Signé HT']);
+  Object.keys(parMois).sort().forEach(function (k) {
+    var b = parMois[k], p = k.split('-');
+    var nom = p.length === 2 ? (MOIS_[Number(p[1]) - 1] + ' ' + p[0]) : k;
+    L.push([nom, b.n, b.ns, b.n ? Math.round(b.ns / b.n * 1000) / 10 + ' %' : '—',
+            Math.round(b.ht * 100) / 100, Math.round(b.hts * 100) / 100]);
+  });
+  L.push(['', '', '', '', '', '']);
+
+  L.push(['Pourquoi on perd', '', '', '', '', '']);
+  L.push(['Motif de refus', 'Nombre', '', '', '', '']);
+  Object.keys(motifs).sort(function (a, b) { return motifs[b] - motifs[a]; })
+    .forEach(function (m) { L.push([m, motifs[m], '', '', '', '']); });
+  if (!Object.keys(motifs).length) L.push(['Aucun refus enregistré', '', '', '', '', '']);
+
+  sh.getRange(1, 1, L.length, 6).setValues(L);
+  sh.getRange(1, 1, 1, 6).setFontSize(13).setFontWeight('bold');
+  ['Ensemble', 'Où en sont les devis', 'Par commercial', 'Par mois', 'Pourquoi on perd']
+    .forEach(function (titre) {
+      for (var i = 0; i < L.length; i++) {
+        if (L[i][0] === titre) {
+          sh.getRange(i + 1, 1, 1, 6).setFontWeight('bold').setBackground('#eef1f5');
+          break;
+        }
+      }
+    });
+  sh.setColumnWidth(1, 230);
+  [2, 3, 4, 5, 6].forEach(function (c) { sh.setColumnWidth(c, 120); });
+  return L.length;
+}
+
+/** Les deux onglets de suivi, à la demande depuis le menu. */
+function rafraichirSuivi() {
+  majStructure_();
+  var n = majAFacturer_();
+  majTableauDeBord_();
+  SpreadsheetApp.getUi().alert('À jour.\n\n' + n + ' devis signé' + (n > 1 ? 's' : '') +
+    ' à facturer dans l\'onglet « ' + SH.FACTURER + ' ».');
+}
+
+/**
+ * Passe en EXPIRE les devis dont la validité est dépassée sans réponse.
+ * Un devis refusé ou signé n'est jamais touché : son sort est connu.
+ */
+function expirer_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.DEVIS);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  var en = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+    .map(function (x) { return String(x).trim(); });
+  var cS = en.indexOf('STATUT') + 1, cD = en.indexOf('DATE_STATUT') + 1;
+  if (!cS) return 0;
+  var auj = jour0_(new Date()), n = 0;
+  lireDevis_().forEach(function (d) {
+    var st = String(d.STATUT || '').toUpperCase();
+    if (st !== 'REMIS' && st !== 'A RELANCER') return;
+    if (!d.VALIDITE) return;
+    if (jour0_(new Date(d.VALIDITE)) >= auj) return;
+    sh.getRange(d._ligne, cS).setValue('EXPIRE');
+    if (cD) sh.getRange(d._ligne, cD).setValue(new Date());
+    tracerServeur_(d.COMMERCIAL || '', 'DEVIS EXPIRE',
+                   'validité dépassée sans réponse', d.NUMERO, '');
+    n++;
+  });
+  return n;
+}
+
+/** Ce que chaque commercial doit faire aujourd'hui, à partir de ses devis. */
+function aFaireParCommercial_() {
+  var reg = lireReglages_();
+  var seuil = Number(reg.rappel_sans_resultat_jours) || 2;
+  var auj = jour0_(new Date());
+  var limite = new Date(auj.getTime() - seuil * 86400000);
+  var out = {};
+  function pour(nom) {
+    var k = String(nom || '—').trim();
+    return out[k] = out[k] || { relances: [], sansResultat: [], sansPreuve: [] };
+  }
+  lireDevis_().forEach(function (d) {
+    var st = String(d.STATUT || '').toUpperCase();
+    var b = pour(d.COMMERCIAL);
+    var ligne = String(d.NUMERO) + ' · ' + (d.CLIENT || '') +
+                ' · ' + nb_(d.TOTAL_TTC) + ' € TTC';
+    if (st === 'A RELANCER' && d.RELANCE_LE && jour0_(new Date(d.RELANCE_LE)) <= auj) {
+      b.relances.push(ligne + ' · prévu le ' +
+        Utilities.formatDate(new Date(d.RELANCE_LE), 'Europe/Paris', 'dd/MM/yyyy') +
+        (d.TELEPHONE ? ' · ' + d.TELEPHONE : ''));
+    }
+    if (st === 'REMIS' && d.DATE && new Date(d.DATE) < limite) {
+      b.sansResultat.push(ligne + ' · remis le ' +
+        Utilities.formatDate(new Date(d.DATE), 'Europe/Paris', 'dd/MM/yyyy'));
+    }
+    if (st === 'SIGNE' && estVide_(d.PREUVE_SIGNATURE)) {
+      b.sansPreuve.push(ligne);
+    }
+  });
+  return out;
+}
+
+/**
+ * Rappel quotidien. Un message par commercial, uniquement s'il a quelque chose
+ * à faire — un rappel qui arrive tous les jours pour rien finit à la corbeille.
+ * Le client, lui, ne reçoit jamais rien : c'est le commercial qui l'appelle.
+ */
+function automateQuotidien() {
+  var reg = lireReglages_();
+  majStructure_();
+  var expires = expirer_();
+  var aFacturer = majAFacturer_();
+  majTableauDeBord_();
+
+  var taches = aFaireParCommercial_();
+  var coms = lireCommerciaux_();
+  var envoyes = 0;
+
+  coms.forEach(function (c) {
+    var t = taches[c.nom];
+    if (!t || !c.email) return;
+    var n = t.relances.length + t.sansResultat.length + t.sansPreuve.length;
+    if (!n) return;
+    var corps = 'Bonjour ' + c.nom + ',\n\n';
+    if (t.relances.length) {
+      corps += 'À RELANCER (' + t.relances.length + ') :\n' +
+               t.relances.map(function (x) { return '  · ' + x; }).join('\n') + '\n\n';
+    }
+    if (t.sansResultat.length) {
+      corps += 'DEVIS SANS RÉSULTAT — dis dans l\'application si le client a signé ou non (' +
+               t.sansResultat.length + ') :\n' +
+               t.sansResultat.map(function (x) { return '  · ' + x; }).join('\n') + '\n\n';
+    }
+    if (t.sansPreuve.length) {
+      corps += 'DEVIS SIGNÉS SANS PHOTO DU PAPIER (' + t.sansPreuve.length + ') :\n' +
+               t.sansPreuve.map(function (x) { return '  · ' + x; }).join('\n') + '\n\n';
+    }
+    corps += 'Tout se règle depuis « Mes devis » dans l\'application.\n\n' +
+             (reg.societe_nom || '');
+    try {
+      MailApp.sendEmail(c.email, 'Tes devis à suivre — ' + n + ' point' + (n > 1 ? 's' : ''), corps);
+      envoyes++;
+    } catch (e) { /* une adresse invalide ne doit pas arrêter les autres */ }
+  });
+
+  // récapitulatif au gérant, une fois par semaine
+  var jourRecap = Number(reg.recap_jour) || 1;
+  var jourJs = new Date().getDay() || 7;   // 1 lundi … 7 dimanche
+  if (jourJs === jourRecap) envoyerRecap_(reg, aFacturer);
+
+  tracerServeur_('', 'AUTOMATE QUOTIDIEN',
+    expires + ' expiré(s) · ' + aFacturer + ' à facturer · ' + envoyes + ' rappel(s) envoyé(s)',
+    '', '');
+  return { expires: expires, aFacturer: aFacturer, rappels: envoyes };
+}
+
+function envoyerRecap_(reg, aFacturer) {
+  var dest = String(reg.recap_email || '').trim() || Session.getEffectiveUser().getEmail();
+  if (!dest) return;
+  var devis = lireDevis_();
+  var sem = new Date(Date.now() - 7 * 86400000);
+  var recents = devis.filter(function (d) { return d.DATE && new Date(d.DATE) >= sem; });
+  var signes = recents.filter(function (d) { return String(d.STATUT).toUpperCase() === 'SIGNE'; });
+  var ht = signes.reduce(function (a, d) { return a + (Number(d.TOTAL_HT) || 0); }, 0);
+  var parCom = {};
+  recents.forEach(function (d) {
+    var k = String(d.COMMERCIAL || '—');
+    var b = parCom[k] = parCom[k] || { n: 0, s: 0, ht: 0 };
+    b.n++;
+    if (String(d.STATUT).toUpperCase() === 'SIGNE') { b.s++; b.ht += Number(d.TOTAL_HT) || 0; }
+  });
+  var corps = 'Semaine écoulée\n\n' +
+    recents.length + ' devis établis · ' + signes.length + ' signés · ' +
+    nb_(ht) + ' € HT signés\n' +
+    (recents.length ? 'Transformation : ' +
+      Math.round(signes.length / recents.length * 1000) / 10 + ' %\n' : '') + '\n' +
+    Object.keys(parCom).sort().map(function (k) {
+      var b = parCom[k];
+      return '  · ' + k + ' : ' + b.n + ' devis, ' + b.s + ' signés, ' + nb_(b.ht) + ' € HT';
+    }).join('\n') +
+    '\n\n' + aFacturer + ' devis signé(s) en tout dans l\'onglet « ' + SH.FACTURER +
+    ' », à resaisir dans Henrri (coche FACTURE quand c\'est fait).\n\n' +
+    'Détail par mois et motifs de refus : onglet « ' + SH.BORD + ' ».\n' +
+    SpreadsheetApp.getActive().getUrl();
+  try {
+    MailApp.sendEmail(dest, 'Devis — récapitulatif de la semaine', corps);
+  } catch (e) { /* sans importance : les onglets restent la source */ }
+}
+
+/* Le déclencheur quotidien, posé et retiré depuis le menu : personne n'a
+   à aller le chercher dans les réglages du projet Apps Script. */
+var AUTOMATE_ = 'automateQuotidien';
+
+function activerAutomate() {
+  arreterAutomate_(true);
+  ScriptApp.newTrigger(AUTOMATE_).timeBased().atHour(7).everyDays(1)
+    .inTimezone('Europe/Paris').create();
+  ecrireReglage_('recap_email',
+    String(lireReglages_().recap_email || '').trim() || Session.getEffectiveUser().getEmail());
+  SpreadsheetApp.getUi().alert(
+    'Rappel quotidien activé, chaque matin vers 7 h.\n\n' +
+    'Chaque commercial reçoit ses relances du jour et ses devis sans résultat — ' +
+    'seulement s\'il a quelque chose à faire.\n' +
+    'Aucun message n\'est envoyé aux clients.');
+}
+function arreterAutomate_(silencieux) {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === AUTOMATE_) { ScriptApp.deleteTrigger(t); n++; }
+  });
+  if (!silencieux) SpreadsheetApp.getUi().alert(n ? 'Rappel quotidien arrêté.' : 'Il n\'y en avait pas.');
+  return n;
+}
+function arreterAutomate() { arreterAutomate_(false); }

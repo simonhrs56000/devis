@@ -125,6 +125,16 @@
   .choix.on{border-color:var(--acc);background:#EAF2FB;box-shadow:inset 0 0 0 1px var(--acc)}
   .choix.on b{color:var(--acc-d)}
   .choix.on b::after{content:' ✓';color:var(--acc)}
+  .vb{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.3px;border-radius:5px;
+      padding:2px 6px;margin-right:6px;vertical-align:1px}
+  .vb-s{background:#E3F4E8;color:#14612F}
+  .vb-r{background:#FFF3DC;color:#7A4E00}
+  .vb-x{background:#FBE9E9;color:#8A1F1F}
+  .vb-a{background:#EEF1F5;color:#54606E}
+  #rappels{background:#FFF3DC;border:1px solid #F0D79B;color:#7A4E00;border-radius:10px;
+           padding:11px 12px;margin:2px 0 12px;font-size:13.5px;line-height:1.5}
+  #rappels b{display:block;font-size:14px;margin-bottom:3px}
+  figure figcaption.vb{position:absolute;left:5px;bottom:5px;margin:0}
   /* choix binaire compact — l'âge du logement, qui décide du taux de TVA */
   .bsel{background:#fff;border:1.5px solid var(--line);color:var(--txt);font-size:13.5px;
         padding:11px 6px;font-weight:500;line-height:1.3}
@@ -292,12 +302,14 @@
       <textarea id="fNotes" placeholder="Fréquence de passage, horaires d'intervention, accès, produits fournis…"></textarea>
     </div>
     <div class="card">
-      <h2>Signature du client</h2>
+      <h2>Signataire</h2>
       <label>Nom du signataire</label>
       <input id="fSignataire" placeholder="Nom et qualité">
+      <div class="mini">S'imprime sous le cadre de signature du devis.</div>
       <div id="sigVide">
-        <div class="mini" style="margin:10px 0 10px">Le client signe en plein écran, sa signature vaut mention « Bon pour accord ».</div>
-        <button class="btn" onclick="ouvrirSignature()">Faire signer le client</button>
+        <div class="mini" style="margin:12px 0 8px">Le devis se signe sur le papier imprimé.
+          Si le client préfère signer à l'écran :</div>
+        <button class="btn sec" onclick="ouvrirSignature()">Signature à l'écran</button>
       </div>
       <div id="sigFaite" class="hide">
         <img id="sigApercu" alt="Signature du client"
@@ -325,8 +337,45 @@
       <div id="okTot" style="font-size:15px"></div>
       <div class="mini" id="okEtat" style="color:inherit;opacity:.85"></div>
     </div>
-    <button class="btn" onclick="partagerDernier(this)">Envoyer / partager le PDF</button>
-    <button class="btn sec" style="margin-top:10px" onclick="photosDernier()">Ajouter des photos du site</button>
+    <button class="btn" onclick="partagerDernier(this)">Imprimer / envoyer le PDF</button>
+
+    <div class="card" style="margin-top:14px">
+      <h2>Résultat du rendez-vous</h2>
+      <div class="mini" style="margin-top:0">À renseigner sur place, une fois le devis remis au client.
+        Tu pourras le corriger plus tard depuis « Mes devis ».</div>
+      <div id="verdictChoix">
+        <button class="choix" onclick="verdict('SIGNE')">
+          <b>Signé sur place</b><span>Tu photographies ensuite le devis signé.</span></button>
+        <button class="choix" onclick="verdict('RELANCE')">
+          <b>Le client réfléchit</b><span>Un rappel te sera envoyé à la date que tu choisis.</span></button>
+        <button class="choix" onclick="verdict('REFUSE')">
+          <b>Refusé</b><span>Une raison en un appui, pour savoir où tu perds.</span></button>
+      </div>
+
+      <div id="verdictRelance" class="hide">
+        <label>Relancer le</label>
+        <input id="fRelance" type="date">
+        <div class="mini">Par défaut dans 7 jours.</div>
+        <button class="btn" style="margin-top:12px" onclick="enregistrerVerdict(this)">Valider</button>
+        <button class="btn sec" style="margin-top:8px" onclick="annulerVerdict()">Retour</button>
+      </div>
+
+      <div id="verdictMotif" class="hide">
+        <label>Pourquoi ?</label>
+        <button class="choix" onclick="setMotif(this,'Trop cher')"><b>Trop cher</b></button>
+        <button class="choix" onclick="setMotif(this,'Concurrent moins cher ou déjà en place')"><b>Concurrent</b></button>
+        <button class="choix" onclick="setMotif(this,'Pas le bon moment')"><b>Pas le bon moment</b></button>
+        <button class="choix" onclick="setMotif(this,'Besoin finalement inexistant')"><b>Pas le besoin</b></button>
+        <button class="choix" onclick="setMotif(this,'')"><b>Autre</b><span>À préciser ci-dessous.</span></button>
+        <input id="fMotif" placeholder="Précision (facultatif)">
+        <button class="btn" style="margin-top:12px" onclick="enregistrerVerdict(this)">Valider</button>
+        <button class="btn sec" style="margin-top:8px" onclick="annulerVerdict()">Retour</button>
+      </div>
+
+      <div id="verdictFait" class="hide ok" style="margin-top:4px"></div>
+    </div>
+
+    <button class="btn sec" onclick="photosDernier()">Photos du site</button>
     <button class="btn sec" style="margin-top:10px" onclick="nouveauDevis()">Nouveau devis</button>
   </section>
 
@@ -337,6 +386,7 @@
         <h2 style="flex:1;margin:0">Mes devis</h2>
         <button class="btn sec sm" onclick="synchroniser(true, this)">Synchroniser</button>
       </div>
+      <div id="rappels" class="hide"></div>
       <div id="liste"></div>
     </div>
     <button class="btn" onclick="nouveauDevis()">Nouveau devis</button>
@@ -351,13 +401,13 @@
   <!-- PHOTOS D'UN DEVIS — écran à part, après la signature -->
   <section id="e7" class="hide">
     <div class="card">
-      <h2>Photos du site</h2>
+      <h2 id="phTitre">Photos du site</h2>
       <div id="phDevis" style="font-size:15px;font-weight:600"></div>
-      <div class="mini" style="margin-top:2px">Pour l'équipe qui interviendra et pour justifier le
+      <div class="mini" id="phAide" style="margin-top:2px">Pour l'équipe qui interviendra et pour justifier le
         chiffrage. Elles partent dans le dossier Drive du devis, jamais sur le PDF remis au client.</div>
       <input id="fPhotos" type="file" accept="image/*" capture="environment" multiple
              class="hide" onchange="ajouterPhotos(this)">
-      <button class="btn" style="margin-top:12px"
+      <button class="btn" id="phBtn" style="margin-top:12px"
               onclick="document.getElementById('fPhotos').click()">Prendre des photos</button>
       <div id="photosL" class="photos"></div>
       <div class="mini" id="phEtat"></div>

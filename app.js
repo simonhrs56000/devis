@@ -14,6 +14,7 @@ var SUGG = [];             // suggestions actuellement affichées
 var SURF = {ligne:null, pieces:[]};
 var ECRAN_AVANT = 1;       // d'où l'on vient quand on ouvre « Mes devis »
 var PHOTO_RETOUR = 6;      // d'où l'on vient quand on ouvre les photos d'un devis
+var TERMINE_RETOUR = 0;    // 6 = l'écran Terminé a été ouvert depuis « Mes devis »
 var ANNUAIRE = 'https://recherche-entreprises.api.gouv.fr/search';
 var DERNIER = null;        // dernier devis enregistré (pour le partage)
 var EN_COURS = false;
@@ -338,6 +339,7 @@ function barreComplete(){
 
 /* Un seul bouton Retour, qui sait d'où l'on vient. */
 function revenir(){
+  if(ETAPE === 5) return ouvrirHistorique();
   if(ETAPE === 7){
     return (PHOTO_RETOUR === 5) ? montrerTermine() : ouvrirHistorique();
   }
@@ -352,9 +354,125 @@ function montrerTermine(){
   ETAPE = 5;
   montrer('e5');
   $('steps').classList.add('hide');
-  $('bar').classList.add('hide');
-  $('hTitre').textContent = 'Terminé';
+  if(TERMINE_RETOUR === 6) barreRetour(); else $('bar').classList.add('hide');
+  $('hTitre').textContent = TERMINE_RETOUR === 6 ? 'Devis' : 'Terminé';
+  peindreVerdict();
   window.scrollTo(0,0);
+}
+
+/* ====================== RÉSULTAT DU RENDEZ-VOUS ======================
+   Le devis est imprimé et signé sur le papier : l'application ne peut pas
+   deviner ce qui s'est passé, c'est le commercial qui le dit en un appui.
+   Sans cette réponse, le bureau ne sait rien du devis qu'il a reçu. */
+var V_TYPE = '', V_MOTIF = '';
+
+function verdict(t){
+  V_TYPE = t; V_MOTIF = '';
+  $('verdictChoix').classList.add('hide');
+  $('verdictRelance').classList.toggle('hide', t !== 'RELANCE');
+  $('verdictMotif').classList.toggle('hide', t !== 'REFUSE');
+  if(t === 'RELANCE'){
+    var d = new Date(Date.now() + 7*86400000);
+    $('fRelance').value = d.toISOString().slice(0,10);
+  }
+  if(t === 'REFUSE'){
+    $('fMotif').value = '';
+    Array.prototype.forEach.call($('verdictMotif').querySelectorAll('.choix'),
+      function(b){ b.classList.remove('on'); });
+  }
+  if(t === 'SIGNE') enregistrerVerdict(null);
+}
+function setMotif(btn, m){
+  V_MOTIF = m;
+  Array.prototype.forEach.call($('verdictMotif').querySelectorAll('.choix'),
+    function(b){ b.classList.toggle('on', b === btn); });
+  if(m) $('fMotif').value = '';
+  else $('fMotif').focus();
+}
+function annulerVerdict(){
+  V_TYPE = ''; V_MOTIF = '';
+  $('verdictRelance').classList.add('hide');
+  $('verdictMotif').classList.add('hide');
+  $('verdictChoix').classList.remove('hide');
+  erreur('');
+}
+function libelleVerdict(v){
+  return v === 'SIGNE' ? 'Signé' : v === 'RELANCE' ? 'À relancer' : v === 'REFUSE' ? 'Refusé' : '';
+}
+function enregistrerVerdict(btn){
+  if(!DERNIER || !V_TYPE) return;
+  var t = V_TYPE;
+  var motif = '', relance = '';
+  if(t === 'REFUSE'){
+    motif = V_MOTIF || val('fMotif').trim();
+    if(!motif) return erreur('Choisis une raison, ou précise-la.');
+  }
+  if(t === 'RELANCE'){
+    relance = val('fRelance');
+    if(!relance) return erreur('Choisis une date de relance.');
+  }
+  erreur('');
+  if(btn) occuper(btn, 'Enregistrement…');
+  DB.get(DERNIER.id).then(function(e){
+    if(!e){ if(btn) libere(btn); return; }
+    e.verdict = t; e.motif = motif; e.relance = relance;
+    e.verdictLe = Date.now(); e.verdictEnvoye = false;
+    return DB.put(e).then(function(){
+      DERNIER = e;
+      if(btn) libere(btn);
+      tracer('RESULTAT ' + libelleVerdict(t).toUpperCase(),
+             motif || (relance ? 'relance le ' + jjmmaa(relance) : ''), e.numero);
+      annulerVerdict();
+      peindreVerdict();
+      synchroniser(false);
+      if(t === 'SIGNE') ouvrirPhotos(e.id, 'SIGNE');
+    });
+  }, function(){ if(btn) libere(btn); });
+}
+function jjmmaa(iso){
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso||''));
+  return m ? m[3]+'/'+m[2]+'/'+m[1] : String(iso||'');
+}
+
+/* Ce qui est déjà répondu s'affiche, et reste modifiable. */
+function peindreVerdict(){
+  var f = $('verdictFait'), c = $('verdictChoix');
+  if(!f || !c) return;
+  var v = DERNIER && DERNIER.verdict;
+  if(!v){ f.classList.add('hide'); if(V_TYPE === '') c.classList.remove('hide'); return; }
+  var t = 'Résultat : ' + libelleVerdict(v);
+  if(v === 'REFUSE' && DERNIER.motif) t += ' — ' + DERNIER.motif;
+  if(v === 'RELANCE' && DERNIER.relance) t += ' le ' + jjmmaa(DERNIER.relance);
+  f.innerHTML = ech(t) + '<div class="mini" style="color:inherit;opacity:.85;margin-top:6px">' +
+    (DERNIER.verdictEnvoye ? 'Transmis au bureau.' : 'Sera transmis au bureau au prochain envoi.') +
+    '</div><button class="btn sec" style="margin-top:10px" onclick="modifierVerdict()">Corriger</button>';
+  f.classList.remove('hide');
+  c.classList.add('hide');
+  $('verdictRelance').classList.add('hide');
+  $('verdictMotif').classList.add('hide');
+}
+function modifierVerdict(){
+  $('verdictFait').classList.add('hide');
+  V_TYPE = '';
+  $('verdictChoix').classList.remove('hide');
+}
+
+/* Depuis « Mes devis » : on réouvre l'écran de fin du devis choisi. */
+function ouvrirVerdict(id){
+  DB.get(id).then(function(e){
+    if(!e) return;
+    DERNIER = e;
+    V_TYPE = ''; V_MOTIF = '';
+    $('verdictRelance').classList.add('hide');
+    $('verdictMotif').classList.add('hide');
+    $('okNum').textContent = e.numero;
+    $('okTot').textContent = eur(((e.devis||{}).totaux||{}).ttc || 0) + ' TTC';
+    $('okEtat').textContent = e.statut === 'envoye'
+      ? 'Reçu par le bureau.'
+      : 'Pas encore parti au bureau.';
+    TERMINE_RETOUR = 6;
+    montrerTermine();
+  });
 }
 
 function etape(n){
@@ -1050,12 +1168,14 @@ function effacerSignature(){
    plusieurs mégaoctets, ce qui ne passerait pas sur un réseau de chantier. */
 var MAX_PHOTOS = 12;
 var PHOTO_ID = null;          // devis en cours de prise de vue
+var PHOTO_TYPE = 'SITE';      // SITE = les locaux · SIGNE = le devis signé sur papier
 
 /* Les photos se prennent APRÈS coup, sur un devis déjà signé et enregistré :
    on ne fait pas patienter le client pendant qu'on photographie ses locaux. */
-function ouvrirPhotos(id){
+function ouvrirPhotos(id, type){
   if(!id) return;
   PHOTO_ID = id;
+  PHOTO_TYPE = (type === 'SIGNE') ? 'SIGNE' : 'SITE';
   DB.get(id).then(function(e){
     if(!e){ PHOTO_ID = null; return; }
     PHOTO_RETOUR = (ETAPE === 5) ? 5 : 6;
@@ -1064,13 +1184,21 @@ function ouvrirPhotos(id){
     barreRetour();
     $('bHist').classList.remove('hide');
     $('hTitre').textContent = 'Photos';
+    var sig = (PHOTO_TYPE === 'SIGNE');
+    $('phTitre').textContent = sig ? 'Devis signé' : 'Photos du site';
+    $('phBtn').textContent   = sig ? 'Photographier le devis signé' : 'Prendre des photos';
+    $('phAide').textContent  = sig
+      ? 'Photographie les pages signées, bien à plat et lisibles : c\'est cette photo qui '
+        + 'fait preuve de l\'accord du client. Elle est rangée dans le dossier Drive du devis.'
+      : 'Pour l\'équipe qui interviendra et pour justifier le chiffrage. Elles partent dans le '
+        + 'dossier Drive du devis, jamais sur le PDF remis au client.';
     var c = (e.devis||{}).client || {};
     $('phDevis').textContent = e.numero + ' · ' + (c.societe || c.contact || '');
     rendrePhotos(e);
     window.scrollTo(0,0);
   });
 }
-function photosDernier(){ if(DERNIER) ouvrirPhotos(DERNIER.id); }
+function photosDernier(){ if(DERNIER) ouvrirPhotos(DERNIER.id, 'SITE'); }
 
 /* Rafraîchit l'écran photos quand un envoi vient d'aboutir en arrière-plan. */
 function majEcranPhotos(){
@@ -1092,11 +1220,12 @@ function ajouterPhotos(input){
       var pleine = '';
       return p.then(function(){ return reduirePhoto(f, 1400, 0.72); })
               .then(function(d){ pleine = d; return d ? reduirePhoto(f, 260, 0.6) : ''; })
-              .then(function(v){ if(pleine) e.photos.push({d:pleine, v:v, envoye:false}); });
+              .then(function(v){ if(pleine) e.photos.push({d:pleine, v:v, t:PHOTO_TYPE, envoye:false}); });
     }, Promise.resolve()).then(function(){
       return DB.put(e);
     }).then(function(){
-      tracer('PHOTOS AJOUTEES', fichiers.length + ' photo' + (fichiers.length>1?'s':''), e.numero);
+      tracer(PHOTO_TYPE === 'SIGNE' ? 'PREUVE SIGNATURE AJOUTEE' : 'PHOTOS AJOUTEES',
+             fichiers.length + ' photo' + (fichiers.length>1?'s':''), e.numero);
       rendrePhotos(e);
       synchroniser(false);
     });
@@ -1138,7 +1267,9 @@ function rendrePhotos(e){
   if(!c) return;
   var ph = (e && e.photos) || [];
   c.innerHTML = ph.map(function(p,i){
-    return '<figure><img src="'+p.d+'" alt="Photo '+(i+1)+' du site">'+
+    var sig = (p.t === 'SIGNE');
+    return '<figure><img src="'+p.d+'" alt="'+(sig?'Devis signé':'Photo du site')+' '+(i+1)+'">'+
+      (sig ? '<figcaption class="vb vb-s">SIGNÉ</figcaption>' : '')+
       (p.envoye ? '' : '<button onclick="supprPhoto('+i+')" aria-label="Supprimer la photo">✕</button>')+
       '</figure>';
   }).join('');
@@ -1263,7 +1394,8 @@ function enregistrerSuite(b, envoi, moi, secours){
       nomFichier: PDF.nomFichier(devis),
       envoyerClient: envoi, statut: 'attente', cree: Date.now(),
       nom: moi.nom, code: moi.code, appareil: APPAREIL, pdfUrl: '',
-      photos: []            // prises plus tard, depuis « Mes devis »
+      photos: [],           // prises plus tard, depuis « Mes devis »
+      verdict: '', motif: '', relance: '', verdictEnvoye: false
     };
     DERNIER = enr;
     DB.put(enr).then(function(){
@@ -1279,6 +1411,8 @@ function enregistrerSuite(b, envoi, moi, secours){
         ? 'Envoi au bureau en cours…'
         : 'Hors connexion : le devis part automatiquement dès que le réseau revient.';
       debloquer(b, secours);
+      TERMINE_RETOUR = 0;
+      V_TYPE = ''; V_MOTIF = '';
       montrerTermine();
       synchroniser(false);
     }, function(e){
@@ -1349,7 +1483,8 @@ function synchroniser(manuel, btn){
   SYNC = true;                     // verrou posé tout de suite : deux appels rapprochés
   DB.tous().then(function(l){      // (retour du réseau + minuterie) n'enverraient pas deux fois
     var att = l.filter(function(x){
-      return x.statut==='attente' || (x.photos||[]).some(function(p){ return !p.envoye; });
+      return x.statut==='attente' || (x.verdict && !x.verdictEnvoye) ||
+             (x.photos||[]).some(function(p){ return !p.envoye; });
     });
     if(!att.length){ SYNC = false; if(btn) libere(btn); etatReseau();
       if(ETAPE===6) rendreHistorique(); envoyerJournal(); return; }
@@ -1365,8 +1500,34 @@ function synchroniser(manuel, btn){
 }
 
 function envoyer(enr){
-  if(enr.statut !== 'attente') return envoyerPhotos(enr);
-  return envoyerDevis(enr).then(function(){ return envoyerPhotos(enr); });
+  if(enr.statut !== 'attente'){
+    return envoyerVerdict(enr).then(function(){ return envoyerPhotos(enr); });
+  }
+  return envoyerDevis(enr)
+    .then(function(){ return envoyerVerdict(enr); })
+    .then(function(){ return envoyerPhotos(enr); });
+}
+
+/* Le résultat du rendez-vous part à part du devis : il est souvent saisi
+   plus tard, parfois corrigé, et il ne doit jamais renvoyer tout le PDF. */
+function envoyerVerdict(enr){
+  if(!enr.verdict || enr.verdictEnvoye || enr.statut !== 'envoye') return Promise.resolve();
+  return fetch(API_URL, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({
+      action:'statut', id:enr.id, nom:enr.nom, code:enr.code, appareil:enr.appareil,
+      numero:enr.numero, verdict:enr.verdict, motif:enr.motif||'', relance:enr.relance||'',
+      quand: enr.verdictLe || Date.now()
+    })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(!d || !d.ok) throw new Error((d && d.erreur) || 'refusé');
+    enr.verdictEnvoye = true;
+    return DB.put(enr);
+  })
+  .catch(function(){});
 }
 
 /* Les photos partent APRÈS le devis, une par une : un envoi lourd qui échoue
@@ -1384,7 +1545,7 @@ function envoyerPhotos(enr){
         body: JSON.stringify({
           action:'photo', id:enr.id, nom:enr.nom, code:enr.code,
           numero:enr.numero, date:enr.devis.date, commercial:enr.devis.commercial,
-          index:i+1, total:enr.photos.length,
+          index:i+1, total:enr.photos.length, type:(p.t === 'SIGNE' ? 'SIGNE' : 'SITE'),
           image: p.d.substring(p.d.indexOf(',')+1)
         })
       })
@@ -1456,6 +1617,7 @@ function purger(){
     var vieux = l.filter(function(e){
       if(e.statut !== 'envoye') return false;
       if((e.photos||[]).some(function(p){ return !p.envoye; })) return false;
+      if(e.verdict && !e.verdictEnvoye) return false;
       return Number(e.envoye || e.cree || 0) < limite;
     });
     if(!vieux.length) return;
@@ -1483,27 +1645,74 @@ function ouvrirHistorique(){
 function rendreHistorique(){
   DB.tous().then(function(l){
     l.sort(function(a,b){ return b.cree-a.cree; });
+    peindreRappels(l);
     if(!l.length){ $('liste').innerHTML='<div class="empty">Aucun devis pour le moment.</div>'; return; }
     $('liste').innerHTML = l.slice(0,100).map(function(e){
       var d = new Date(e.cree);
       var cl = String((e.devis.client||{}).societe || (e.devis.client||{}).contact || '—');
       var ph = (e.photos||[]).length;
       var phAtt = (e.photos||[]).filter(function(p){ return !p.envoye; }).length;
+      var sig = (e.photos||[]).some(function(p){ return p.t === 'SIGNE'; });
       return '<div class="hist"><div class="i">'+
-        '<b>'+ech(cl)+'</b>'+
+        '<b>'+badgeVerdict(e)+ech(cl)+'</b>'+
         '<span><span class="pt '+(e.statut==='envoye'?'pt-ok':'pt-att')+'"></span>'+
         ech(e.numero)+' · '+d.toLocaleDateString('fr-FR')+' · '+eur(e.devis.totaux.ttc)+' TTC'+
         (e.statut==='envoye'?'':' · à envoyer')+
         (phAtt?' · '+phAtt+' photo'+(phAtt>1?'s':'')+' à envoyer':'')+
-        (e.numeroPdf?' · renuméroté (PDF client : '+ech(e.numeroPdf)+')':'')+'</span></div>'+
+        (e.numeroPdf?' · renuméroté (PDF client : '+ech(e.numeroPdf)+')':'')+
+        detailVerdict(e)+'</span></div>'+
         '<div class="acts">'+
         '<button class="btn sec sm" onclick="partagerId(\''+e.id+'\', this)">PDF</button>'+
-        '<button class="btn sec sm" onclick="ouvrirPhotos(\''+e.id+'\')">Photos'+(ph?' ('+ph+')':'')+'</button>'+
+        '<button class="btn sec'+(e.verdict?' sm':' sm')+'" onclick="ouvrirVerdict(\''+e.id+'\')">'+
+          (e.verdict?'Résultat':'Résultat ?')+'</button>'+
+        '<button class="btn sec sm" onclick="ouvrirPhotos(\''+e.id+'\', \''+
+          (e.verdict==='SIGNE' && !sig ? 'SIGNE' : 'SITE')+'\')">Photos'+(ph?' ('+ph+')':'')+'</button>'+
         '<button class="btn sec sm" onclick="dupliquer(\''+e.id+'\', this)">Dupliquer</button>'+
         '<button class="btn sec sm" title="Renvoyer au bureau" onclick="renvoyer(\''+e.id+'\', this)">⟳</button>'+
         '</div></div>';
     }).join('');
   });
+}
+
+/* La pastille de résultat : le commercial voit d'un coup d'œil ce qui traîne. */
+function badgeVerdict(e){
+  var v = e.verdict;
+  if(!v) return '<span class="vb vb-a">À RENSEIGNER</span>';
+  if(v === 'SIGNE')  return '<span class="vb vb-s">SIGNÉ</span>';
+  if(v === 'REFUSE') return '<span class="vb vb-x">REFUSÉ</span>';
+  return '<span class="vb vb-r">À RELANCER</span>';
+}
+function detailVerdict(e){
+  if(e.verdict === 'REFUSE' && e.motif) return '<br>Refusé : ' + ech(e.motif);
+  if(e.verdict === 'RELANCE' && e.relance){
+    var dû = (e.relance <= new Date().toISOString().slice(0,10));
+    return '<br>' + (dû ? 'À relancer maintenant (prévu le ' : 'Relance prévue le ') +
+           jjmmaa(e.relance) + (dû ? ')' : '');
+  }
+  if(e.verdict === 'SIGNE' && !(e.photos||[]).some(function(p){ return p.t === 'SIGNE'; }))
+    return '<br>Photo du devis signé manquante';
+  return '';
+}
+
+/* Un seul rappel, en haut de la liste : les relances du jour et les devis
+   remis dont on ne sait toujours pas ce qu'ils sont devenus. */
+function peindreRappels(l){
+  var z = $('rappels');
+  if(!z) return;
+  var auj = new Date().toISOString().slice(0,10);
+  var hier = new Date(Date.now() - 86400000).getTime();
+  var rel = l.filter(function(e){ return e.verdict === 'RELANCE' && e.relance && e.relance <= auj; });
+  var sans = l.filter(function(e){ return !e.verdict && Number(e.cree||0) < hier; });
+  var sig = l.filter(function(e){
+    return e.verdict === 'SIGNE' && !(e.photos||[]).some(function(p){ return p.t === 'SIGNE'; });
+  });
+  var t = [];
+  if(rel.length)  t.push(rel.length + ' client' + (rel.length>1?'s à relancer':' à relancer') + ' aujourd\'hui.');
+  if(sans.length) t.push(sans.length + ' devis sans résultat renseigné.');
+  if(sig.length)  t.push(sig.length + ' devis signé' + (sig.length>1?'s':'') + ' sans photo du papier.');
+  if(!t.length){ z.classList.add('hide'); z.innerHTML = ''; return; }
+  z.innerHTML = '<b>À faire</b>' + t.map(ech).join('<br>');
+  z.classList.remove('hide');
 }
 
 /* Repasser un devis en file d'attente : utile si le bureau ne l'a jamais reçu.
@@ -1562,6 +1771,7 @@ function nouveauDevis(){
   lsj('brouillon', null);
   DERNIER = null;
   TYPE = null; PLUS2ANS = null; TAUX = null;
+  TERMINE_RETOUR = 0; V_TYPE = ''; V_MOTIF = '';
   $('steps').classList.remove('hide');
   etape(1);
 }
