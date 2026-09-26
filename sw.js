@@ -1,17 +1,17 @@
 /* Service worker : met l'application en cache pour qu'elle démarre sans réseau.
    Après toute modification des fichiers, incrémenter VERSION pour forcer la mise à jour. */
 
-var VERSION = 'devis-v9';
+var VERSION = 'devis-v15';
 
 var FICHIERS = [
   './',
   'index.html',
-  'config.js?v=9',
-  'jspdf.umd.min.js?v=9',
-  'police.js?v=9',
-  'logo.js?v=9',
-  'pdf.js?v=9',
-  'app.js?v=9',
+  'config.js?v=15',
+  'jspdf.umd.min.js?v=15',
+  'police.js?v=15',
+  'logo.js?v=15',
+  'pdf.js?v=15',
+  'app.js?v=15',
   'manifest.webmanifest',
   'icon-192.png',
   'icon-512.png'
@@ -39,8 +39,9 @@ self.addEventListener('activate', function (e) {
 self.addEventListener('fetch', function (e) {
   var url = e.request.url;
 
-  // Les appels au Google Sheet ne passent jamais par le cache.
+  // Google Sheet et annuaire des entreprises : jamais de cache.
   if (url.indexOf('script.google.com') > -1 || url.indexOf('googleusercontent.com') > -1) return;
+  if (url.indexOf('api.gouv.fr') > -1) return;
   if (e.request.method !== 'GET') return;
 
   // Fichiers de l'application : cache d'abord (démarrage instantané et hors ligne),

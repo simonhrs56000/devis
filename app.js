@@ -7,6 +7,12 @@ var CFG = null;            // {reglages, catalogue, commerciaux, sel, maj}
 var LIGNES = [];
 var ETAPE = 1;
 var TYPE = null;           // 'PRO' ou 'PART' — choisi au début de chaque devis
+var PLUS2ANS = null;       // particulier : logement de plus de deux ans (true/false)
+var TAUX = null;           // taux de TVA du devis, déduit des deux réponses ci-dessus
+var CLIENTS = [];          // répertoire local, reconstruit depuis les devis déjà faits
+var SUGG = [];             // suggestions actuellement affichées
+var SURF = {ligne:null, pieces:[]};
+var ANNUAIRE = 'https://recherche-entreprises.api.gouv.fr/search';
 var DERNIER = null;        // dernier devis enregistré (pour le partage)
 var EN_COURS = false;
 var APPAREIL = null;
@@ -65,6 +71,27 @@ function ls(k,v){ try{ if(v===undefined) return localStorage.getItem(k);
 function lsj(k,v){ if(v===undefined){ try{ return JSON.parse(ls(k)||'null'); }catch(e){ return null; } }
   ls(k, JSON.stringify(v)); }
 
+/* ---- session du commercial ----
+   Volontairement dans sessionStorage, pas dans localStorage : elle survit à une
+   mise en veille, à un passage en arrière-plan et à un rechargement de page,
+   mais disparaît dès que l'application est fermée. Le commercial ressaisit alors
+   son nom et son code. */
+function session(v){
+  try{
+    if(v === undefined) return JSON.parse(sessionStorage.getItem('moi') || 'null');
+    if(v === null) sessionStorage.removeItem('moi');
+    else sessionStorage.setItem('moi', JSON.stringify(v));
+  }catch(e){ return null; }
+  return null;
+}
+
+/* Comparaison des noms tolérante : casse, accents et espaces en trop. */
+function normNom(s){
+  s = String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+  try{ s = s.normalize('NFD').replace(/[̀-ͯ]/g, ''); }catch(e){}
+  return s;
+}
+
 /* ====================== BASE LOCALE (IndexedDB) ====================== */
 var DB = (function(){
   var db=null;
@@ -102,6 +129,16 @@ window.addEventListener('load', function(){
 
   if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(function(){}); }
 
+  // Demande au téléphone de ne PAS effacer nos données pour faire de la place :
+  // un devis signé hors connexion doit survivre à une semaine sans réseau.
+  try{
+    if(navigator.storage && navigator.storage.persist){
+      navigator.storage.persisted().then(function(ok){
+        if(!ok) return navigator.storage.persist();
+      }).catch(function(){});
+    }
+  }catch(e){}
+
   initSignature();
   brancherSignature();
 
@@ -109,51 +146,43 @@ window.addEventListener('load', function(){
     var lg = $('hLogo'); lg.src = LOGO_BLANC; lg.classList.remove('hide');
   }
 
-  CFG = lsj('cfg');
-  if(CFG){ alignerCompteurs(); demarrer(); if(navigator.onLine) chargerConfig(false); }
-  else {
-    // premier lancement : on montre l'écran d'accueil tout de suite,
-    // pour ne jamais laisser l'écran vide pendant le téléchargement
-    $('hSub').textContent = navigator.onLine ? 'Première installation' : 'Hors connexion';
-    $('steps').classList.add('hide'); $('bar').classList.add('hide'); $('bHist').classList.add('hide');
-    montrer('e0');
-    if(navigator.onLine) chargerConfig(true);
-  }
+  chargerRepertoire();
+  ls('moi', null);   // anciennes versions : la session ne doit plus survivre à la fermeture
 
-  window.addEventListener('online', function(){ etatReseau(); synchroniser(false); });
+  CFG = lsj('cfg');
+  if(CFG) alignerCompteurs();
+  demarrer();
+  purger();
+
+  window.addEventListener('online', function(){ etatReseau(); synchroniser(false); rafraichirConfig(); });
   window.addEventListener('offline', etatReseau);
   setInterval(function(){ if(navigator.onLine) synchroniser(false); }, 120000);
 });
 
 function demarrer(){
-  $('hSub').textContent = (CFG.reglages && CFG.reglages.societe_nom) || 'Devis sur place';
-  var s = $('fCommercial');
-  s.innerHTML = CFG.commerciaux.map(function(c){ return '<option>'+ech(c.nom)+'</option>'; }).join('');
+  $('hSub').textContent = (CFG && CFG.reglages && CFG.reglages.societe_nom) || 'Devis sur place';
+  $('premiere').classList.toggle('hide', !!CFG);
 
-  var moi = lsj('moi');
-  if(moi && !CFG.commerciaux.some(function(c){ return c.nom===moi.nom; })){
-    lsj('moi', null); moi = null;   // ce commercial n'existe plus dans le classeur
-  }
-
+  var moi = session();
   if(!moi){
     ecranConnexion('');
   } else {
-    s.value = moi.nom;
     $('quiSuisJe').textContent = moi.nom;
     var b = lsj('brouillon');
     if(b && b.lignes && b.lignes.length && confirm('Un devis non terminé a été retrouvé. Le reprendre ?')){
       restaurer(b); etape(2);
     } else {
-      TYPE = null; majType(); etape(1);
+      TYPE = null; PLUS2ANS = null; TAUX = null; majType(); etape(1);
     }
   }
   etatReseau();
   synchroniser(false);
+  rafraichirConfig();
 }
 
 /* ====================== CONNEXION ======================
    Écran séparé : une fois le commercial reconnu, il sort du parcours.
-   On n'y revient que volontairement, par « changer de commercial ». */
+   Il revient à chaque ouverture de l'application. */
 function ecranConnexion(msg){
   ETAPE = 0;
   montrer('eCo');
@@ -161,6 +190,7 @@ function ecranConnexion(msg){
   $('bar').classList.add('hide');
   $('bHist').classList.add('hide');
   $('hTitre').textContent = 'Connexion';
+  $('fCommercial').value = '';
   $('fCode').value = '';
   if($('fCode').type === 'text') basculerCode();   // on ne laisse jamais un code affiché
   erreur(msg || '');
@@ -178,78 +208,62 @@ function basculerCode(){
 }
 
 function deconnexion(){
-  if(!confirm('Se déconnecter ? Les devis déjà enregistrés restent sur l\'appareil.')) return;
-  lsj('moi', null);
+  if(!confirm('Se déconnecter ? Les devis déjà enregistrés restent sur l\'appareil et partiront normalement.')) return;
+  session(null);
   ecranConnexion('');
-}
-
-/* Le bureau a changé la liste des commerciaux, un code ou les tarifs pendant
-   que l'appli tournait : on remet l'écran à jour sans attendre un redémarrage. */
-function appliquerNouvelleConfig(){
-  if(!CFG || !CFG.commerciaux) return;
-  var noms = CFG.commerciaux.map(function(c){ return c.nom; });
-  var s = $('fCommercial'), choisi = s.value;
-  s.innerHTML = noms.map(function(n){ return '<option>'+ech(n)+'</option>'; }).join('');
-  $('hSub').textContent = (CFG.reglages && CFG.reglages.societe_nom) || 'Devis sur place';
-
-  var moi = lsj('moi');
-  if(!moi){ if(noms.indexOf(choisi)>=0) s.value = choisi; return; }
-
-  if(noms.indexOf(moi.nom) < 0) return reidentifier('Ta fiche a changé côté bureau.');
-
-  // le code a-t-il été modifié dans le classeur ?
-  var c = null;
-  CFG.commerciaux.forEach(function(x){ if(x.nom===moi.nom) c=x; });
-  sha256(moi.nom+'|'+moi.code+'|'+(CFG.sel||'')).then(function(h){
-    if(c && c.empreinte && h && h !== c.empreinte) return reidentifier('Ton code a été modifié.');
-    s.value = moi.nom;
-  });
 }
 
 function reidentifier(raison){
   if(ETAPE >= 3) return;          // devis en cours : on ne coupe rien, ce sera au prochain
-  lsj('moi', null);
-  ecranConnexion(raison + ' Choisis ton nom et saisis ton code.');
+  session(null);
+  ecranConnexion(raison + ' Saisis de nouveau ton nom et ton code.');
 }
 
-/* ====================== CONFIG (catalogue, tarifs) ====================== */
-function chargerConfig(bloquant, btn){
-  var ac = null;
-  if(btn) occuper(btn, 'Téléchargement…');
-  if(!navigator.onLine){
-    if(bloquant){ $('msg0').textContent = 'Aucune connexion. Reconnecte-toi puis réessaie.'; }
-    return;
-  }
-  if(bloquant) $('msg0').textContent = 'Téléchargement en cours…';
-  var stop = null;
-  if(window.AbortController){
-    ac = new AbortController();
-    stop = setTimeout(function(){ ac.abort(); }, 25000);   // pas d'attente sans fin
-  }
-  fetch(API_URL + '?action=config&t=' + Date.now(), ac ? {method:'GET', signal:ac.signal} : {method:'GET'})
+/* ====================== ÉCHANGES AVEC LE BUREAU ======================
+   Tout passe désormais par POST avec le nom et le code : l'adresse, qui est
+   publique puisqu'elle figure dans l'application, ne laisse plus rien filtrer. */
+function poster(corps, delai){
+  var ac = window.AbortController ? new AbortController() : null;
+  var stop = ac ? setTimeout(function(){ ac.abort(); }, delai || 25000) : null;
+  var opts = {
+    method: 'POST',
+    headers: {'Content-Type':'text/plain;charset=utf-8'},   // évite la requête preflight
+    body: JSON.stringify(corps)
+  };
+  if(ac) opts.signal = ac.signal;
+  return fetch(API_URL, opts)
     .then(function(r){ if(stop) clearTimeout(stop); return r.json(); })
-    .then(function(d){
-      if(!d.ok) throw new Error(d.erreur||'réponse invalide');
-      CFG = d; lsj('cfg', d);
-      alignerCompteurs();
-      if(btn) libere(btn);
-      if(bloquant){ montrer(null); demarrer(); }
-      else{
-        var m=$('majCat'); if(m) m.textContent = new Date(d.maj).toLocaleDateString('fr-FR');
-        appliquerNouvelleConfig();   // le bureau a modifié commerciaux / codes / tarifs
-      }
-    })
-    .catch(function(e){
-      if(stop) clearTimeout(stop);
-      if(btn) libere(btn);
-      if(bloquant) $('msg0').textContent = 'Le catalogue n\'a pas pu être téléchargé (' +
-        (e.name === 'AbortError' ? 'délai dépassé' : e.message) +
-        '). Vérifie ta connexion et appuie de nouveau sur le bouton.';
-    });
+    .catch(function(e){ if(stop) clearTimeout(stop); throw e; });
+}
+
+function rangerConfig(cfg){
+  if(!cfg) return;
+  CFG = cfg;
+  lsj('cfg', cfg);
+  alignerCompteurs();
+  $('hSub').textContent = (cfg.reglages && cfg.reglages.societe_nom) || 'Devis sur place';
+  $('premiere').classList.add('hide');
+  var m = $('majCat');
+  if(m && cfg.maj) m.textContent = new Date(cfg.maj).toLocaleDateString('fr-FR');
+}
+
+/* Rafraîchit catalogue et tarifs, sans rien bloquer si le réseau manque. */
+function rafraichirConfig(btn){
+  var moi = session();
+  if(!moi || !navigator.onLine){ if(btn) libere(btn); return; }
+  if(btn) occuper(btn, 'Mise à jour…');
+  poster({action:'config', nom:moi.nom, code:moi.code}).then(function(d){
+    if(btn) libere(btn);
+    if(!d || !d.ok){
+      if(d && d.refus) reidentifier('Ton accès a changé côté bureau.');
+      return;
+    }
+    rangerConfig(d.config);
+  }, function(){ if(btn) libere(btn); });
 }
 
 /* ====================== NAVIGATION ====================== */
-var ECRANS = ['e0','eCo','e1','e2','e3','e4','e5','e6'];
+var ECRANS = ['eCo','e1','e2','e3','e4','e5','e6','e7'];
 function montrer(id){
   ECRANS.forEach(function(k){ $(k).classList.toggle('hide', k!==id); });
 }
@@ -264,6 +278,7 @@ function etape(n){
   $('bPrec').classList.toggle('hide', n<=1);          // plus de retour vers la connexion
   $('bSuiv').textContent = n===4 ? 'Enregistrer le devis' : 'Continuer';
   $('hTitre').textContent = ['','Type de client','Client','Prestations','Validation','Terminé','Mes devis'][n];
+  if(n!==2) cacherSugg();
   if(n===1) majType();
   if(n<=2) majBarre();          // le total du bas suit le devis en cours, pas le précédent
   if(n===3) rendreLignes();
@@ -282,6 +297,7 @@ function suivant(){
       if(s && s.length !== 14) return erreur('Un SIRET compte 14 chiffres — laisse le champ vide si tu ne l\'as pas.');
     } else {
       if(!val('cContact')) return erreur('Indique le nom du client.');
+      if(PLUS2ANS === null) return erreur('Indique si le logement a plus de deux ans : c\'est ce qui fixe le taux de TVA.');
     }
     sauverBrouillon(); return etape(3);
   }
@@ -305,26 +321,235 @@ function codeConforme(c){
   return String(c).length >= 4 && /[0-9]/.test(c) && /[^A-Za-z0-9]/.test(c);
 }
 
+/* ====================== IDENTIFICATION HORS LIGNE ======================
+   Le serveur valide nom et code à la première connexion d'un appareil ; celui-ci
+   garde ensuite de quoi vérifier tout seul, avec un grain de sel qui lui est
+   propre et qui n'a jamais circulé. Rien de testable n'est publié. */
+function selAppareil(){
+  var s = ls('selAppareil');
+  if(!s){
+    try{
+      s = Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(16)), function(x){
+        return ('0'+x.toString(16)).slice(-2); }).join('');
+    }catch(e){
+      s = String(Math.random()).slice(2) + String(Math.random()).slice(2);
+    }
+    ls('selAppareil', s);
+  }
+  return s;
+}
+function verifLocal(nom){
+  var v = lsj('verif') || {};
+  return v[normNom(nom)] || null;
+}
+function poserVerif(nom, code){
+  return sha256(normNom(nom)+'|'+code+'|'+selAppareil()).then(function(h){
+    if(!h) return;
+    var v = lsj('verif') || {};
+    v[normNom(nom)] = {nom:nom, h:h};
+    var cles = Object.keys(v);
+    while(cles.length > 3) delete v[cles.shift()];   // trois commerciaux au plus par appareil
+    lsj('verif', v);
+  });
+}
+function oublierVerif(nom){
+  var v = lsj('verif') || {};
+  delete v[normNom(nom)];
+  lsj('verif', v);
+}
+
+/* Un seul et même message quelle que soit la cause de l'échec : un téléphone
+   trouvé ne doit pas permettre de découvrir quels noms existent chez BB. */
+var ECHECS = 0;
+function attenteEchec(){
+  if(ECHECS < 3) return 0;
+  return ECHECS < 6 ? 10000 : 60000;      // 10 s, puis 1 min entre deux essais
+}
+function refuser(){
+  ECHECS++;
+  var att = attenteEchec();
+  if(att){ try{ sessionStorage.setItem('bloqueJusqua', String(Date.now() + att)); }catch(e){} }
+  $('fCode').value = '';
+  erreur('Nom ou code incorrect.' +
+    (att ? ' Prochain essai dans ' + (att/1000) + ' secondes.' : ''));
+}
+
 function verifierCommercial(btn){
   var nom = val('fCommercial'), code = val('fCode');
-  if(!nom) return erreur('Choisis ton nom dans la liste.');
+  if(!nom) return erreur('Saisis ton nom.');
   if(!code) return erreur('Saisis ton code.');
-  if(!codeConforme(code)) return erreur(
-    'Code incomplet : au moins 4 caractères, dont un chiffre et un caractère spécial.');
-  var c = null;
-  CFG.commerciaux.forEach(function(x){ if(x.nom===nom) c=x; });
-  if(!c) return erreur('Commercial inconnu.');
+
+  var reste = 0;
+  try{ reste = Number(sessionStorage.getItem('bloqueJusqua') || 0) - Date.now(); }catch(e){}
+  if(reste > 0) return erreur('Trop d\'essais. Réessaie dans ' + Math.ceil(reste/1000) + ' secondes.');
+  if(!codeConforme(code)) return refuser();
+
   if(btn) occuper(btn, 'Vérification…');
-  sha256(nom+'|'+code+'|'+(CFG.sel||'')).then(function(h){
+  var suite = navigator.onLine ? connexionEnLigne(nom, code) : connexionHorsLigne(nom, code);
+  suite.then(function(r){
     if(btn) libere(btn);
-    if(c.empreinte && h && h !== c.empreinte) return erreur('Code incorrect.');
-    lsj('moi', {nom:nom, code:code});
-    $('quiSuisJe').textContent = nom;
-    $('fCode').value = '';                           // le code ne traîne pas à l'écran
+    if(!r.ok){
+      if(r.premiere) return erreur('Première connexion sur cet appareil : il faut du réseau.');
+      if(r.attente) return erreur(r.erreur || 'Trop d\'essais. Réessaie plus tard.');
+      return refuser();
+    }
+    ECHECS = 0;
+    try{ sessionStorage.removeItem('bloqueJusqua'); }catch(e){}
+    session({nom:r.nom, code:code});     // on retient l'orthographe du bureau, pas celle tapée
+    $('quiSuisJe').textContent = r.nom;
+    $('fCode').value = '';               // le code ne traîne pas à l'écran
     if($('fCode').type === 'text') basculerCode();
-    TYPE = null; majType();
+    TYPE = null; PLUS2ANS = null; TAUX = null; majType();
     etape(1);
+    synchroniser(false);
+  }, function(){
+    if(btn) libere(btn);
+    erreur('La connexion au bureau a échoué. Réessaie.');
   });
+}
+
+function connexionEnLigne(nom, code){
+  return poster({action:'connexion', nom:nom, code:code}).then(function(d){
+    if(!d || !d.ok){
+      if(d && d.refus && /essais/i.test(String(d.erreur||''))) return {ok:false, attente:true, erreur:d.erreur};
+      return {ok:false};
+    }
+    rangerConfig(d.config);
+    return poserVerif(d.nom, code).then(function(){ return {ok:true, nom:d.nom}; });
+  }, function(){
+    return connexionHorsLigne(nom, code);     // réseau capricieux : on retombe sur le local
+  });
+}
+
+function connexionHorsLigne(nom, code){
+  var v = verifLocal(nom);
+  if(!v) return Promise.resolve({ok:false, premiere:true});
+  return sha256(normNom(nom)+'|'+code+'|'+selAppareil()).then(function(h){
+    return (h && h === v.h) ? {ok:true, nom:v.nom} : {ok:false};
+  });
+}
+
+/* ====================== RÉPERTOIRE CLIENTS ======================
+   Reconstruit depuis les devis déjà enregistrés sur l'appareil : aucune
+   requête, donc l'autocomplétion fonctionne aussi bien hors connexion. */
+function chargerRepertoire(){
+  return DB.tous().then(function(l){
+    var vus = {}, out = [];
+    l.sort(function(a,b){ return b.cree - a.cree; }).forEach(function(e){
+      var c = ((e.devis||{}).client)||{};
+      var cle = ((c.societe||'') + '|' + (c.contact||'')).toLowerCase().trim();
+      if(cle === '|' || vus[cle]) return;
+      vus[cle] = 1; out.push(c);
+    });
+    CLIENTS = out.slice(0, 300);
+  }, function(){});
+}
+
+/* ====================== SUGGESTIONS ====================== */
+var TIMER_ANNU = null;
+function boiteSugg(quoi){ return $(quoi === 'soc' ? 'suggSoc' : 'suggCon'); }
+function cacherSugg(){
+  SUGG = [];
+  ['suggSoc','suggCon'].forEach(function(id){
+    var b = $(id); if(b){ b.classList.add('hide'); b.innerHTML = ''; }
+  });
+}
+
+function suggerer(quoi){
+  var champ = (quoi === 'soc') ? 'cSociete' : 'cContact';
+  var q = val(champ);
+  if(q.length < 2){ cacherSugg(); return; }
+
+  // 1. clients déjà connus : immédiat, hors connexion compris
+  var bas = q.toLowerCase();
+  SUGG = CLIENTS.filter(function(c){
+    return ((c.societe||'') + ' ' + (c.contact||'') + ' ' + (c.ville||''))
+      .toLowerCase().indexOf(bas) >= 0;
+  }).slice(0, 4).map(function(c){ return {src:'client', c:c}; });
+  rendreSugg(quoi, false);
+
+  // 2. annuaire des entreprises, seulement pour une raison sociale et avec du réseau
+  clearTimeout(TIMER_ANNU);
+  if(quoi !== 'soc' || TYPE !== 'PRO' || !navigator.onLine || q.length < 3) return;
+  rendreSugg(quoi, true);
+  TIMER_ANNU = setTimeout(function(){ interrogerAnnuaire(q, quoi); }, 400);
+}
+
+function interrogerAnnuaire(q, quoi){
+  var ac = window.AbortController ? new AbortController() : null;
+  var stop = ac ? setTimeout(function(){ ac.abort(); }, 7000) : null;
+  fetch(ANNUAIRE + '?per_page=5&q=' + encodeURIComponent(q), ac ? {signal:ac.signal} : {})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(stop) clearTimeout(stop);
+      if(val('cSociete') !== q) return;            // la saisie a continué entre-temps
+      (d && d.results ? d.results : []).forEach(function(r){
+        var e = normaliserEntreprise(r);
+        if(e && SUGG.length < 8) SUGG.push({src:'annuaire', c:e});
+      });
+      rendreSugg(quoi, false);
+    })
+    .catch(function(){
+      if(stop) clearTimeout(stop);
+      rendreSugg(quoi, false);                     // pas d'annuaire : on garde les clients connus
+    });
+}
+
+/* L'annuaire renvoie des champs qui varient d'une fiche à l'autre : on ne garde
+   que ce dont on est sûr, et on ne casse jamais la saisie si le format change. */
+function normaliserEntreprise(r){
+  try{
+    var s = r.siege || {};
+    if(String(r.etat_administratif || 'A').toUpperCase() === 'C') return null;   // entreprise fermée
+    var cp = String(s.code_postal || '').trim();
+    var ville = String(s.libelle_commune || '').trim();
+    var voie = [s.numero_voie, s.type_voie, s.libelle_voie]
+      .filter(function(x){ return String(x||'').trim(); }).join(' ').trim();
+    if(!voie && s.adresse){
+      voie = String(s.adresse).replace(cp, '').replace(ville, '').replace(/\s{2,}/g, ' ').trim();
+    }
+    var nom = String(r.nom_complet || r.nom_raison_sociale || '').trim();
+    if(!nom) return null;
+    var si = String(s.siret || '').replace(/\D/g, '');
+    return {
+      societe: nom.toUpperCase() === nom ? nom : nom,
+      siret: si.length === 14 ? si.slice(0,3)+' '+si.slice(3,6)+' '+si.slice(6,9)+' '+si.slice(9) : '',
+      tva: si.length === 14 ? tvaDepuisSiren(si.slice(0,9)) : '',
+      adresse: voie, cp: cp, ville: ville, type: 'PRO'
+    };
+  }catch(e){ return null; }
+}
+
+function rendreSugg(quoi, attente){
+  var b = boiteSugg(quoi);
+  if(!b) return;
+  var h = SUGG.map(function(s, i){
+    var c = s.c;
+    var titre = c.societe || c.contact || '';
+    var det = [c.contact && c.societe ? c.contact : '', [c.cp, c.ville].filter(Boolean).join(' ')]
+      .filter(Boolean).join(' · ');
+    return '<button type="button" onclick="appliquerSugg(' + i + ')">' +
+      '<b>' + ech(titre) + '</b>' +
+      (det ? '<em>' + ech(det) + '</em>' : '') +
+      '<span class="src">' + (s.src === 'client' ? 'déjà client' : 'annuaire') + '</span></button>';
+  }).join('');
+  if(attente) h += '<div class="att">Recherche dans l\'annuaire des entreprises…</div>';
+  b.innerHTML = h;
+  b.classList.toggle('hide', !h);
+}
+
+function appliquerSugg(i){
+  var c = SUGG[i] && SUGG[i].c;
+  if(!c) return;
+  vibrer(8);
+  if(c.type === 'PART' || c.type === 'PRO'){ TYPE = c.type; majType(); }
+  ['Societe','Siret','Tva','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
+    var v = c[k.toLowerCase()];
+    if(v) $('c' + k).value = v;
+  });
+  if(val('cSiret')) $('mSiret').textContent = 'SIRET repris de la fiche.';
+  cacherSugg();
+  sauverBrouillon();
 }
 
 /* ====================== TYPE DE CLIENT ====================== */
@@ -343,6 +568,48 @@ function majType(){
   $('lAdresse').textContent = pro ? 'Adresse du site à nettoyer' : 'Adresse du logement';
   $('tClient').textContent = pro ? 'Client professionnel' : (TYPE ? 'Client particulier' : 'Client');
   if(TYPE === 'PART'){ $('cSociete').value=''; $('cSiret').value=''; $('cTva').value=''; }
+  $('blocAge').classList.toggle('hide', TYPE !== 'PART');
+  if(pro){ PLUS2ANS = null; appliquerTaux(20); }
+  else if(PLUS2ANS !== null){ appliquerTaux(PLUS2ANS ? 10 : 20); }
+  else { TAUX = null; majTva(); }
+  cacherSugg();
+  majBarre();
+}
+
+/* ====================== TAUX DE TVA ======================
+   Un professionnel est toujours à 20 %. Un particulier est à 10 % pour
+   l'entretien et la fin de chantier d'un logement achevé depuis plus de
+   deux ans, et à 20 % sinon. Le taux reste modifiable ligne par ligne. */
+function setLogement(plus2ans){
+  PLUS2ANS = !!plus2ans;
+  appliquerTaux(PLUS2ANS ? 10 : 20);
+  sauverBrouillon();
+}
+function appliquerTaux(t){
+  TAUX = t;
+  LIGNES.forEach(function(l){ l.tva = t; });   // le taux appartient au devis, pas au catalogue
+  majTva();
+  if(ETAPE === 3) rendreLignes();
+  if(ETAPE === 4) calculer();
+  majBarre();
+}
+function majTva(){
+  $('ageOui').classList.toggle('on', PLUS2ANS === true);
+  $('ageNon').classList.toggle('on', PLUS2ANS === false);
+  var b = $('tvaInfo');
+  if(TYPE === 'PRO'){
+    b.classList.remove('hide');
+    b.innerHTML = '<b>TVA 20 %</b> — taux normal, client professionnel.';
+  } else if(TAUX === 10){
+    b.classList.remove('hide');
+    b.innerHTML = '<b>TVA 10 %</b> — entretien et fin de chantier sur un logement de plus de deux ans. ' +
+      'Le client remplira une attestation de TVA réduite.';
+  } else if(TAUX === 20){
+    b.classList.remove('hide');
+    b.innerHTML = '<b>TVA 20 %</b> — logement de moins de deux ans.';
+  } else {
+    b.classList.add('hide'); b.textContent = '';
+  }
 }
 
 /* N° de TVA intracommunautaire français : FR + clé sur 2 chiffres + les 9 chiffres du SIREN.
@@ -371,33 +638,108 @@ function ouvrirCatalogue(){
   if(d.showModal) d.showModal(); else { d.setAttribute('open',''); d.style.position='fixed'; d.style.bottom='0'; d.style.zIndex='50'; }
 }
 function fermerCatalogue(){ var d=$('dlg'); if(d.close) d.close(); else d.removeAttribute('open'); }
+function ligneCatalogue(p, i){
+  return '<div class="item" onclick="ajouterCatalogue('+i+')">'+
+    '<span class="px">'+eur(p.pu)+'</span><b>'+ech(p.designation)+'</b><span>'+
+    ech(p.detail||'')+(p.unite?' · '+ech(p.unite):'')+
+    (p.type==='MENSUEL'?' · mensuel':'')+'</span></div>';
+}
 function rendreCatalogue(){
-  var q = $('rech').value.toLowerCase(), cats = {};
+  var q = $('rech').value.toLowerCase(), cats = {}, h='';
+
+  // Les prestations les plus récemment utilisées d'abord : sur le terrain,
+  // c'est presque toujours l'une d'elles.
+  if(!q){
+    var f = lsj('favs') || {}, recents = [];
+    CFG.catalogue.forEach(function(p,i){ if(f[p.designation]) recents.push({p:p,i:i,t:f[p.designation]}); });
+    recents.sort(function(a,b){ return b.t - a.t; });
+    if(recents.length){
+      h += '<div class="cat">Récemment utilisées</div>';
+      recents.slice(0,5).forEach(function(o){ h += ligneCatalogue(o.p, o.i); });
+    }
+  }
+
   CFG.catalogue.forEach(function(p,i){
     if(q && (p.designation+' '+p.detail+' '+p.categorie).toLowerCase().indexOf(q)<0) return;
     (cats[p.categorie]=cats[p.categorie]||[]).push({p:p,i:i});
   });
-  var h='';
   Object.keys(cats).forEach(function(c){
     h += '<div class="cat">'+ech(c)+'</div>';
-    cats[c].forEach(function(o){
-      h += '<div class="item" onclick="ajouterCatalogue('+o.i+')">'+
-           '<span class="px">'+eur(o.p.pu)+'</span><b>'+ech(o.p.designation)+'</b><span>'+
-           ech(o.p.detail||'')+(o.p.unite?' · '+ech(o.p.unite):'')+
-           (o.p.type==='MENSUEL'?' · mensuel':'')+'</span></div>';
-    });
+    cats[c].forEach(function(o){ h += ligneCatalogue(o.p, o.i); });
   });
   $('dlgB').innerHTML = h || '<div class="empty">Aucune prestation trouvée.</div>';
 }
 function ajouterCatalogue(i){
   var p = CFG.catalogue[i];
   LIGNES.push({categorie:p.categorie,designation:p.designation,detail:p.detail,
-    qte:1,unite:p.unite,pu:p.pu,tva:p.tva,type:p.type});
+    qte:1,unite:p.unite,pu:p.pu,rem:0,tva:(TAUX||p.tva),type:p.type,reference:p.reference||''});
+  noterPresta(p);
   fermerCatalogue(); rendreLignes(); sauverBrouillon();
+}
+/* Mémorise l'usage d'une prestation, en ne gardant que les 12 dernières. */
+function noterPresta(p){
+  var f = lsj('favs') || {};
+  f[p.designation] = Date.now();
+  var g = {};
+  Object.keys(f).sort(function(a,b){ return f[b]-f[a]; }).slice(0,12)
+    .forEach(function(k){ g[k] = f[k]; });
+  lsj('favs', g);
+}
+
+/* ====================== CALCULETTE DE SURFACE ======================
+   On mesure pièce par pièce, l'appli additionne : c'est là que les erreurs
+   de multiplication faites debout dans un hall coûtent le plus cher. */
+function ouvrirSurface(i){
+  SURF = {ligne:i, pieces:[{nom:'',l:'',w:''},{nom:'',l:'',w:''}]};
+  rendreSurface();
+  var d = $('dlgSurf');
+  if(d.showModal) d.showModal();
+  else { d.setAttribute('open',''); d.style.position='fixed'; d.style.bottom='0'; d.style.zIndex='50'; }
+}
+function fermerSurface(){ var d=$('dlgSurf'); if(d.close) d.close(); else d.removeAttribute('open'); }
+function ajouterPiece(){ SURF.pieces.push({nom:'',l:'',w:''}); rendreSurface(); }
+function supprPiece(i){ SURF.pieces.splice(i,1); if(!SURF.pieces.length) ajouterPiece(); else rendreSurface(); }
+function setPiece(i,k,v){ SURF.pieces[i][k] = v; majSurface(); }
+function surfacePiece(p){
+  var l = Number(String(p.l).replace(',','.')) || 0;
+  var w = String(p.w).trim() === '' ? 1 : (Number(String(p.w).replace(',','.')) || 0);
+  return Math.round(l * w * 100) / 100;
+}
+function totalSurface(){
+  return Math.round(SURF.pieces.reduce(function(s,p){ return s + surfacePiece(p); }, 0) * 100) / 100;
+}
+function rendreSurface(){
+  $('surfL').innerHTML = SURF.pieces.map(function(p,i){
+    return '<div class="piece">'+
+      '<div style="flex:1.3"><label>Pièce</label><input value="'+ech(p.nom)+'" placeholder="Hall, bureau 1…" oninput="SURF.pieces['+i+'].nom=this.value"></div>'+
+      '<div><label>Long.</label><input inputmode="decimal" value="'+ech(p.l)+'" oninput="setPiece('+i+',\'l\',this.value)"></div>'+
+      '<div><label>Larg.</label><input inputmode="decimal" value="'+ech(p.w)+'" oninput="setPiece('+i+',\'w\',this.value)"></div>'+
+      '<div class="eq" id="sp'+i+'">'+nb(surfacePiece(p))+' m²</div>'+
+      '<button class="x" onclick="supprPiece('+i+')">✕</button></div>';
+  }).join('');
+  majSurface();
+}
+function majSurface(){
+  SURF.pieces.forEach(function(p,i){ var e=$('sp'+i); if(e) e.textContent = nb(surfacePiece(p))+' m²'; });
+  $('surfTot').textContent = nb(totalSurface())+' m²';
+}
+function nb(n){
+  return (Math.round((Number(n)||0)*100)/100).toString().replace('.', ',');
+}
+function appliquerSurface(){
+  var t = totalSurface();
+  if(SURF.ligne !== null && LIGNES[SURF.ligne]){
+    LIGNES[SURF.ligne].qte = t;
+    var det = SURF.pieces.filter(function(p){ return surfacePiece(p) > 0; })
+      .map(function(p){ return (p.nom ? p.nom+' ' : '') + nb(surfacePiece(p)) + ' m²'; }).join(', ');
+    if(det && !LIGNES[SURF.ligne].detail) LIGNES[SURF.ligne].detail = det;
+    rendreLignes(); sauverBrouillon();
+  }
+  fermerSurface();
 }
 function ajouterLibre(){
   LIGNES.push({categorie:'Divers',designation:'',detail:'',qte:1,unite:'forfait',
-    pu:0,tva:Number((CFG.reglages||{}).tva_defaut||20),type:'PONCTUEL'});
+    pu:0,rem:0,tva:(TAUX||Number((CFG.reglages||{}).tva_defaut||20)),type:'PONCTUEL',reference:''});
   rendreLignes(); sauverBrouillon();
   setTimeout(function(){ var i=document.querySelectorAll('.ligne input'); if(i.length) i[i.length-7].focus(); },50);
 }
@@ -417,27 +759,36 @@ function rendreLignes(){
         '<span class="chip'+(l.type==='MENSUEL'?'':' p')+'">'+(l.type==='MENSUEL'?'Mensuel récurrent':'Ponctuel')+'</span>'+
       '</div><button class="x" onclick="supprL('+i+')">Suppr.</button></div>'+
       '<div class="g">'+
-        '<div><label>Quantité</label><input type="number" inputmode="decimal" step="0.01" value="'+l.qte+'" oninput="setL('+i+',\'qte\',this.value)"></div>'+
+        '<div><label>Quantité</label><div style="display:flex;gap:5px">'+
+          '<input type="number" inputmode="decimal" step="0.01" value="'+l.qte+'" style="flex:1;min-width:0" oninput="setL('+i+',\'qte\',this.value)">'+
+          '<button class="btn sec" style="flex:0 0 44px;padding:9px 0;font-size:13px" title="Calculer une surface" onclick="ouvrirSurface('+i+')">m²</button>'+
+        '</div></div>'+
         '<div><label>Unité</label><input value="'+ech(l.unite)+'" oninput="setL('+i+',\'unite\',this.value)"></div>'+
         '<div><label>P.U. HT</label><input type="number" inputmode="decimal" step="0.01" value="'+l.pu+'" oninput="setL('+i+',\'pu\',this.value)"></div>'+
       '</div>'+
       '<div class="g">'+
+        '<div><label>Remise %</label><input type="number" inputmode="decimal" step="0.5" min="0" max="100" value="'+(l.rem||0)+'" oninput="setL('+i+',\'rem\',this.value)"></div>'+
+        '<div><label>TVA %</label><input type="number" inputmode="decimal" step="0.1" value="'+l.tva+'" oninput="setL('+i+',\'tva\',this.value)"></div>'+
         '<div><label>Type</label><select onchange="setL('+i+',\'type\',this.value)">'+
           '<option value="PONCTUEL"'+(l.type==='PONCTUEL'?' selected':'')+'>Ponctuel</option>'+
           '<option value="MENSUEL"'+(l.type==='MENSUEL'?' selected':'')+'>Mensuel</option></select></div>'+
-        '<div><label>TVA %</label><input type="number" inputmode="decimal" step="0.1" value="'+l.tva+'" oninput="setL('+i+',\'tva\',this.value)"></div>'+
       '</div>'+
+      '<div class="g"><div><label>Poste (regroupement sur le devis)</label>'+
+        '<input value="'+ech(l.categorie)+'" placeholder="Remise en état des sols" oninput="setL('+i+',\'categorie\',this.value)"></div></div>'+
       '<div class="ft"><span style="color:#6b7280">Total HT ligne</span><b id="tl'+i+'">'+
-        eur((Number(l.qte)||0)*(Number(l.pu)||0))+'</b></div></div>';
+        eur(montantL(l))+'</b></div></div>';
   }).join('');
   majBarre();
 }
+function montantL(l){
+  return Math.round((Number(l.qte)||0)*(Number(l.pu)||0)*(1-(Number(l.rem)||0)/100)*100)/100;
+}
 function setL(i,k,v){
-  LIGNES[i][k] = (k==='qte'||k==='pu'||k==='tva') ? (v===''?0:Number(v)) : v;
+  LIGNES[i][k] = (k==='qte'||k==='pu'||k==='tva'||k==='rem') ? (v===''?0:Number(v)) : v;
   if(k==='type'){ rendreLignes(); }
   else{
     var l=LIGNES[i], t=$('tl'+i);
-    if(t) t.textContent = eur((Number(l.qte)||0)*(Number(l.pu)||0));
+    if(t) t.textContent = eur(montantL(l));
     majBarre();
   }
   sauverBrouillon();
@@ -446,32 +797,47 @@ function supprL(i){ LIGNES.splice(i,1); rendreLignes(); sauverBrouillon(); }
 
 /* ====================== TOTAUX ====================== */
 function totaux(){
-  var r = Number(val('fRemise'))||0, coef = 1-r/100;
-  var t = {htPonctuel:0,htMensuel:0,ht:0,tva:0,ttc:0};
+  var t = {htPonctuel:0,htMensuel:0,ht:0,tva:0,ttc:0,parTaux:{}};
   LIGNES.forEach(function(l){
-    var b = (Number(l.qte)||0)*(Number(l.pu)||0)*coef;
+    var b = montantL(l), taux = Number(l.tva)||0;
     if(String(l.type).toUpperCase()==='MENSUEL') t.htMensuel+=b; else t.htPonctuel+=b;
-    t.tva += b*(Number(l.tva)||0)/100;
+    t.tva += b*taux/100;
+    t.parTaux[taux] = (t.parTaux[taux]||0) + b*taux/100;
   });
   t.ht=t.htPonctuel+t.htMensuel; t.ttc=t.ht+t.tva;
   ['htPonctuel','htMensuel','ht','tva','ttc'].forEach(function(k){ t[k]=Math.round(t[k]*100)/100; });
+  Object.keys(t.parTaux).forEach(function(k){ t.parTaux[k]=Math.round(t.parTaux[k]*100)/100; });
   return t;
 }
+/* Récapitulatif par poste, comme sur le devis imprimé. */
 function calculer(){
-  var t = totaux(), r = Number(val('fRemise'))||0, h='';
-  if(t.htPonctuel) h+='<div class="tot"><span>Prestations ponctuelles HT</span><b>'+eur(t.htPonctuel)+'</b></div>';
-  if(t.htMensuel)  h+='<div class="tot"><span>Abonnement mensuel HT</span><b>'+eur(t.htMensuel)+'</b></div>';
-  if(r) h+='<div class="tot"><span>Remise</span><b>'+r+' %</b></div>';
+  var t = totaux(), h='', postes = {}, ordre = [];
+  LIGNES.forEach(function(l){
+    var k = String(l.categorie||'').trim() || 'Prestations';
+    if(!postes[k]){ postes[k]=0; ordre.push(k); }
+    postes[k] += montantL(l);
+  });
+  ordre.forEach(function(k){
+    h += '<div class="tot"><span>'+ech(k)+'</span><b>'+eur(Math.round(postes[k]*100)/100)+'</b></div>';
+  });
+  if(ordre.length) h += '<div style="height:6px"></div>';
+  if(t.htMensuel && t.htPonctuel){
+    h+='<div class="tot"><span>dont abonnement mensuel HT</span><b>'+eur(t.htMensuel)+'</b></div>';
+  }
   h+='<div class="tot"><span>Total HT</span><b>'+eur(t.ht)+'</b></div>';
-  h+='<div class="tot"><span>TVA</span><b>'+eur(t.tva)+'</b></div>';
+  Object.keys(t.parTaux).sort(function(a,b){return a-b;}).forEach(function(taux){
+    h+='<div class="tot"><span>TVA '+taux+' %</span><b>'+eur(t.parTaux[taux])+'</b></div>';
+  });
   h+='<div class="tot big"><span style="color:inherit">Total TTC</span><span>'+eur(t.ttc)+'</span></div>';
   $('recap').innerHTML = h;
   majBarre(); sauverBrouillon();
 }
 function majBarre(){
-  var t = totaux();
-  $('bTot').textContent = eur(t.ttc);
-  $('bTotL').textContent = LIGNES.length+' ligne'+(LIGNES.length>1?'s':'')+' · TTC';
+  var t = totaux(), pro = (TYPE === 'PRO');
+  // Un professionnel raisonne en HT, un particulier en TTC : on met en avant
+  // le chiffre dont le client va parler.
+  $('bTot').textContent = eur(pro ? t.ht : t.ttc);
+  $('bTotL').textContent = LIGNES.length+' ligne'+(LIGNES.length>1?'s':'')+(pro ? ' · HT' : ' · TTC');
 }
 
 /* ====================== SIGNATURE ====================== */
@@ -534,10 +900,114 @@ function effacerSignature(){
   majApercuSignature();
 }
 
+/* ====================== PHOTOS DU SITE ======================
+   Réduites dans l'appareil avant stockage : une photo de téléphone pèse
+   plusieurs mégaoctets, ce qui ne passerait pas sur un réseau de chantier. */
+var MAX_PHOTOS = 12;
+var PHOTO_ID = null;          // devis en cours de prise de vue
+
+/* Les photos se prennent APRÈS coup, sur un devis déjà signé et enregistré :
+   on ne fait pas patienter le client pendant qu'on photographie ses locaux. */
+function ouvrirPhotos(id){
+  if(!id) return;
+  PHOTO_ID = id;
+  DB.get(id).then(function(e){
+    if(!e){ PHOTO_ID = null; return; }
+    ETAPE = 7; montrer('e7');
+    $('steps').classList.add('hide'); $('bar').classList.add('hide');
+    $('bHist').classList.remove('hide');
+    $('hTitre').textContent = 'Photos';
+    var c = (e.devis||{}).client || {};
+    $('phDevis').textContent = e.numero + ' · ' + (c.societe || c.contact || '');
+    rendrePhotos(e);
+    window.scrollTo(0,0);
+  });
+}
+function photosDernier(){ if(DERNIER) ouvrirPhotos(DERNIER.id); }
+
+/* Rafraîchit l'écran photos quand un envoi vient d'aboutir en arrière-plan. */
+function majEcranPhotos(){
+  if(ETAPE !== 7 || !PHOTO_ID) return;
+  DB.get(PHOTO_ID).then(function(e){ if(e) rendrePhotos(e); });
+}
+
+function ajouterPhotos(input){
+  var fichiers = Array.prototype.slice.call(input.files || []);
+  input.value = '';
+  if(!fichiers.length || !PHOTO_ID) return;
+  DB.get(PHOTO_ID).then(function(e){
+    if(!e) return;
+    e.photos = e.photos || [];
+    var reste = MAX_PHOTOS - e.photos.length;
+    if(reste <= 0) return erreur(MAX_PHOTOS + ' photos au maximum par devis.');
+    if(fichiers.length > reste) erreur('Seules les ' + reste + ' premières photos ont été ajoutées.');
+    return fichiers.slice(0, reste).reduce(function(p, f){
+      var pleine = '';
+      return p.then(function(){ return reduirePhoto(f, 1400, 0.72); })
+              .then(function(d){ pleine = d; return d ? reduirePhoto(f, 260, 0.6) : ''; })
+              .then(function(v){ if(pleine) e.photos.push({d:pleine, v:v, envoye:false}); });
+    }, Promise.resolve()).then(function(){
+      return DB.put(e);
+    }).then(function(){
+      rendrePhotos(e);
+      synchroniser(false);
+    });
+  });
+}
+function reduirePhoto(f, max, qualite){
+  return new Promise(function(res){
+    if(!f || !/^image\//.test(f.type || '')) return res('');
+    var url = URL.createObjectURL(f), img = new Image();
+    img.onload = function(){
+      try{
+        var e = Math.min(1, (max || 1400) / Math.max(img.width, img.height));
+        var cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(img.width * e));
+        cv.height = Math.max(1, Math.round(img.height * e));
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        res(cv.toDataURL('image/jpeg', qualite || 0.72));
+      }catch(err){ res(''); }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = function(){ URL.revokeObjectURL(url); res(''); };
+    img.src = url;
+  });
+}
+/* On ne retire qu'une photo pas encore partie : une fois dans Drive,
+   elle n'appartient plus à l'appareil. */
+function supprPhoto(i){
+  if(!PHOTO_ID) return;
+  DB.get(PHOTO_ID).then(function(e){
+    if(!e || !e.photos || !e.photos[i] || e.photos[i].envoye) return;
+    e.photos.splice(i,1);
+    return DB.put(e).then(function(){ rendrePhotos(e); });
+  });
+}
+
+function rendrePhotos(e){
+  var c = $('photosL');
+  if(!c) return;
+  var ph = (e && e.photos) || [];
+  c.innerHTML = ph.map(function(p,i){
+    return '<figure><img src="'+p.d+'" alt="Photo '+(i+1)+' du site">'+
+      (p.envoye ? '' : '<button onclick="supprPhoto('+i+')" aria-label="Supprimer la photo">✕</button>')+
+      '</figure>';
+  }).join('');
+  var att = ph.filter(function(p){ return !p.envoye; }).length;
+  var etat = $('phEtat');
+  if(!etat) return;
+  if(!ph.length) etat.textContent = 'Aucune photo pour ce devis.';
+  else if(!att) etat.textContent = ph.length + ' photo' + (ph.length>1?'s':'') + ' rangée' +
+    (ph.length>1?'s':'') + ' dans le dossier Drive du devis.';
+  else etat.textContent = att + ' photo' + (att>1?'s':'') + ' en attente d\'envoi' +
+    (navigator.onLine ? ' — envoi en cours.' : ' — elles partiront au retour du réseau.');
+}
+
 /* ====================== BROUILLON ====================== */
 function lireClient(){
   var pro = (TYPE === 'PRO');
   return {type: TYPE || 'PRO',
+          plus2ans: pro ? null : PLUS2ANS,
           societe: pro ? val('cSociete') : '',
           siret:   pro ? val('cSiret')   : '',
           tva:     pro ? val('cTva')     : '',
@@ -545,7 +1015,8 @@ function lireClient(){
           adresse:val('cAdresse'),cp:val('cCp'),ville:val('cVille')};
 }
 function sauverBrouillon(){
-  lsj('brouillon', {client:lireClient(), lignes:LIGNES, remise:val('fRemise'), notes:val('fNotes')});
+  lsj('brouillon', {client:lireClient(), lignes:LIGNES, objet:val('fObjet'),
+                    plus2ans:PLUS2ANS, taux:TAUX, notes:val('fNotes')});
 }
 function restaurer(b){
   LIGNES = b.lignes||[];
@@ -554,7 +1025,10 @@ function restaurer(b){
   majType();
   ['Societe','Siret','Tva','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
     $('c'+k).value = c[k.toLowerCase()]||''; });
-  $('fRemise').value = b.remise||0;
+  $('fObjet').value = b.objet||'';
+  PLUS2ANS = (b.plus2ans === true || b.plus2ans === false) ? b.plus2ans : null;
+  TAUX = b.taux || null;
+  majTva();
   $('fNotes').value = b.notes||'';
 }
 
@@ -593,7 +1067,7 @@ function enregistrer(){
   if(TYPE !== 'PRO' && !val('cContact')) return erreur('Indique le nom du client.');
   var envoi = $('fEnvoi').checked;
   if(envoi && !val('cEmail')) return erreur('Pas d\'e-mail client : décoche l\'envoi ou renseigne l\'adresse.');
-  var moi = lsj('moi');
+  var moi = session();
   if(!moi) return erreur('Identifie-toi d\'abord.');
 
   EN_COURS = true;
@@ -624,7 +1098,8 @@ function enregistrerSuite(b, envoi, moi, secours){
       commercial: moi.nom,
       client: lireClient(),
       lignes: LIGNES.slice(),
-      remise: Number(val('fRemise'))||0,
+      objet: val('fObjet'),
+      remise: 0,        // la remise est portée par chaque ligne
       notes: val('fNotes'),
       signataire: val('fSignataire'),
       signature: SIG.image || '',
@@ -636,11 +1111,13 @@ function enregistrerSuite(b, envoi, moi, secours){
       numero: devis.numero, devis: devis, pdf: pdf64,
       nomFichier: PDF.nomFichier(devis),
       envoyerClient: envoi, statut: 'attente', cree: Date.now(),
-      nom: moi.nom, code: moi.code, appareil: APPAREIL, pdfUrl: ''
+      nom: moi.nom, code: moi.code, appareil: APPAREIL, pdfUrl: '',
+      photos: []            // prises plus tard, depuis « Mes devis »
     };
     DERNIER = enr;
     DB.put(enr).then(function(){
       lsj('brouillon', null);
+      chargerRepertoire();
       $('okNum').textContent = devis.numero;
       $('okTot').textContent = eur(devis.totaux.ttc)+' TTC';
       $('okEtat').textContent = navigator.onLine
@@ -716,19 +1193,60 @@ function synchroniser(manuel, btn){
   }
   SYNC = true;                     // verrou posé tout de suite : deux appels rapprochés
   DB.tous().then(function(l){      // (retour du réseau + minuterie) n'enverraient pas deux fois
-    var att = l.filter(function(x){ return x.statut==='attente'; });
+    var att = l.filter(function(x){
+      return x.statut==='attente' || (x.photos||[]).some(function(p){ return !p.envoye; });
+    });
     if(!att.length){ SYNC = false; if(btn) libere(btn); etatReseau(); if(ETAPE===6) rendreHistorique(); return; }
     etatReseau(null, 'Envoi de '+att.length+' devis…', 'att');
     var suite = Promise.resolve();
     att.forEach(function(enr){ suite = suite.then(function(){ return envoyer(enr); }); });
     suite.then(function(){
       SYNC = false; if(btn) libere(btn);
-      etatReseau(); if(ETAPE===6) rendreHistorique(); majEtatDernier();
-    }, function(){ SYNC = false; if(btn) libere(btn); etatReseau(); });
+      etatReseau(); if(ETAPE===6) rendreHistorique(); majEtatDernier(); majEcranPhotos(); purger();
+    }, function(){ SYNC = false; if(btn) libere(btn); etatReseau(); majEcranPhotos(); });
   }, function(){ SYNC = false; if(btn) libere(btn); });
 }
 
 function envoyer(enr){
+  if(enr.statut !== 'attente') return envoyerPhotos(enr);
+  return envoyerDevis(enr).then(function(){ return envoyerPhotos(enr); });
+}
+
+/* Les photos partent APRÈS le devis, une par une : un envoi lourd qui échoue
+   ne doit jamais empêcher le devis lui-même d'arriver au bureau. */
+function envoyerPhotos(enr){
+  var reste = (enr.photos||[]).filter(function(p){ return !p.envoye; });
+  if(!reste.length || enr.statut !== 'envoye') return Promise.resolve();
+  var suite = Promise.resolve();
+  (enr.photos||[]).forEach(function(p, i){
+    if(p.envoye) return;
+    suite = suite.then(function(){
+      return fetch(API_URL, {
+        method:'POST',
+        headers:{'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify({
+          action:'photo', id:enr.id, nom:enr.nom, code:enr.code,
+          numero:enr.numero, date:enr.devis.date, commercial:enr.devis.commercial,
+          index:i+1, total:enr.photos.length,
+          image: p.d.substring(p.d.indexOf(',')+1)
+        })
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d || !d.ok) return;
+        p.envoye = true;
+        p.url = d.url || '';
+        // La photo est dans Drive : on ne garde qu'une vignette sur le téléphone,
+        // vingt fois plus légère. C'est ce qui empêche l'appli de gonfler.
+        if(p.v) p.d = p.v;
+        return DB.put(enr);
+      });
+    });
+  });
+  return suite.catch(function(){});
+}
+
+function envoyerDevis(enr){
   return fetch(API_URL, {
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},  // évite la requête preflight
@@ -739,7 +1257,11 @@ function envoyer(enr){
   })
   .then(function(r){ return r.json(); })
   .then(function(d){
-    if(!d.ok) throw new Error(d.erreur||'refusé');
+    if(!d.ok){
+      // le bureau ne reconnaît plus ce commercial : on redemande une connexion
+      if(d.refus){ oublierVerif(enr.nom); reidentifier('Ton accès a changé côté bureau.'); }
+      throw new Error(d.erreur||'refusé');
+    }
     enr.statut='envoye'; enr.pdfUrl=d.pdfUrl||''; enr.envoye=Date.now();
     if(d.numero && d.numero !== enr.numero){   // le bureau a dû renuméroter
       enr.numeroPdf = enr.numero; enr.numero = d.numero;
@@ -764,12 +1286,37 @@ function majEtatDernier(){
   });
 }
 
+/* ====================== PURGE ======================
+   Un devis parti au bureau n'a plus besoin de rester sur le téléphone : il est
+   dans le classeur et son PDF dans le Drive. On allège donc les appareils, et
+   on limite ce qui se perd avec un téléphone égaré.
+   Règle absolue : on ne touche jamais à un devis, ni à une photo, qui n'est pas
+   encore arrivé au bureau, quel que soit son âge. */
+var RETENTION_JOURS = 30;
+function purger(){
+  var limite = Date.now() - RETENTION_JOURS * 86400000;
+  return DB.tous().then(function(l){
+    var vieux = l.filter(function(e){
+      if(e.statut !== 'envoye') return false;
+      if((e.photos||[]).some(function(p){ return !p.envoye; })) return false;
+      return Number(e.envoye || e.cree || 0) < limite;
+    });
+    if(!vieux.length) return;
+    return vieux.reduce(function(p, e){
+      return p.then(function(){ return DB.suppr(e.id); });
+    }, Promise.resolve()).then(function(){
+      chargerRepertoire();
+      if(ETAPE === 6) rendreHistorique();
+    });
+  }, function(){});
+}
+
 /* ====================== HISTORIQUE ====================== */
 function ouvrirHistorique(){
   ETAPE=6; montrer('e6');
   $('steps').classList.add('hide'); $('bar').classList.add('hide');
   $('hTitre').textContent='Mes devis';
-  var moi = lsj('moi');
+  var moi = session();
   $('quiSuisJe').textContent = (moi && moi.nom) || '—';
   var m=$('majCat'); if(m && CFG && CFG.maj) m.textContent = new Date(CFG.maj).toLocaleDateString('fr-FR');
   rendreHistorique(); window.scrollTo(0,0);
@@ -781,14 +1328,21 @@ function rendreHistorique(){
     $('liste').innerHTML = l.slice(0,100).map(function(e){
       var d = new Date(e.cree);
       var cl = String((e.devis.client||{}).societe || (e.devis.client||{}).contact || '—');
+      var ph = (e.photos||[]).length;
+      var phAtt = (e.photos||[]).filter(function(p){ return !p.envoye; }).length;
       return '<div class="hist"><div class="i">'+
         '<b>'+ech(cl)+'</b>'+
         '<span><span class="pt '+(e.statut==='envoye'?'pt-ok':'pt-att')+'"></span>'+
         ech(e.numero)+' · '+d.toLocaleDateString('fr-FR')+' · '+eur(e.devis.totaux.ttc)+' TTC'+
         (e.statut==='envoye'?'':' · à envoyer')+
+        (phAtt?' · '+phAtt+' photo'+(phAtt>1?'s':'')+' à envoyer':'')+
         (e.numeroPdf?' · renuméroté (PDF client : '+ech(e.numeroPdf)+')':'')+'</span></div>'+
+        '<div class="acts">'+
         '<button class="btn sec sm" onclick="partagerId(\''+e.id+'\', this)">PDF</button>'+
-        '<button class="btn sec sm" title="Renvoyer au bureau" onclick="renvoyer(\''+e.id+'\', this)">⟳</button></div>';
+        '<button class="btn sec sm" onclick="ouvrirPhotos(\''+e.id+'\')">Photos'+(ph?' ('+ph+')':'')+'</button>'+
+        '<button class="btn sec sm" onclick="dupliquer(\''+e.id+'\', this)">Dupliquer</button>'+
+        '<button class="btn sec sm" title="Renvoyer au bureau" onclick="renvoyer(\''+e.id+'\', this)">⟳</button>'+
+        '</div></div>';
     }).join('');
   });
 }
@@ -804,19 +1358,48 @@ function renvoyer(id, btn){
   });
 }
 
+/* Repartir d'un devis existant : un devis de copropriété ressemble beaucoup
+   au précédent, et une renégociation ne change souvent qu'une ligne. */
+function dupliquer(id, btn){
+  if(btn) occuper(btn, '');
+  DB.get(id).then(function(e){
+    if(btn) libere(btn);
+    if(!e || !e.devis) return;
+    var d = e.devis, c = d.client || {};
+    nouveauDevis();
+    TYPE = (c.type === 'PART') ? 'PART' : 'PRO';
+    PLUS2ANS = (c.plus2ans === true || c.plus2ans === false) ? c.plus2ans : null;
+    majType();
+    if(PLUS2ANS !== null) appliquerTaux(PLUS2ANS ? 10 : 20);
+    ['Societe','Siret','Tva','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
+      $('c'+k).value = c[k.toLowerCase()] || '';
+    });
+    LIGNES = (d.lignes||[]).map(function(l){
+      var o = {}; for(var k in l){ if(l.hasOwnProperty(k)) o[k] = l[k]; } return o;
+    });
+    $('fObjet').value = d.objet || '';
+    $('fNotes').value = d.notes || '';
+    sauverBrouillon();
+    etape(2);
+    erreur('');
+  });
+}
+
 /* ====================== NOUVEAU DEVIS ====================== */
 function nouveauDevis(){
   debloquer($('bSuiv'));
   LIGNES = [];
-  ['cSociete','cSiret','cTva','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes']
+  PHOTO_ID = null;
+  cacherSugg();
+  ['cSociete','cSiret','cTva','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes','fObjet']
     .forEach(function(id){ $(id).value=''; });
-  $('fRemise').value = 0;
+  $('fObjet').value = '';
   $('fEnvoi').checked = false;
   $('mSiret').textContent = 'Le n° de TVA se complète tout seul à partir du SIRET.';
   effacerSignature();
   lsj('brouillon', null);
   DERNIER = null;
-  TYPE = null;
+  TYPE = null; PLUS2ANS = null; TAUX = null;
   $('steps').classList.remove('hide');
   etape(1);
 }

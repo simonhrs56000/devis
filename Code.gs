@@ -28,6 +28,7 @@ function onOpen() {
     .addItem('4. Proposer un code conforme', 'proposerCode')
     .addItem('5. Tester (devis fictif)', 'testerDevis')
     .addItem('6. Mettre à jour la structure du fichier', 'majStructure')
+    .addItem('7. Charger la grille de prix', 'chargerGrillePrix')
     .addToUi();
 }
 
@@ -91,10 +92,7 @@ function initialiser() {
   creerOnglet_(ss, SH.CATALOGUE, ['CATEGORIE', 'DESIGNATION', 'DETAIL', 'UNITE', 'PU_HT', 'TVA', 'TYPE', 'ACTIF']);
   creerOnglet_(ss, SH.COMMERCIAUX, ['NOM', 'EMAIL', 'CODE', 'ACTIF']);
   creerOnglet_(ss, SH.DEVIS, ENTETES_DEVIS_);
-  creerOnglet_(ss, SH.LIGNES, [
-    'NUMERO', 'ORDRE', 'CATEGORIE', 'DESIGNATION', 'DETAIL', 'QTE', 'UNITE',
-    'PU_HT', 'TYPE', 'TVA', 'TOTAL_HT'
-  ]);
+  creerOnglet_(ss, SH.LIGNES, ENTETES_LIGNES_);
 
   var reg = ss.getSheetByName(SH.REGLAGES);
   if (reg.getLastRow() < 2) {
@@ -138,8 +136,13 @@ var ENTETES_DEVIS_ = [
   'NUMERO', 'DATE', 'COMMERCIAL', 'CLIENT', 'TYPE_CLIENT', 'SIRET_CLIENT', 'TVA_CLIENT',
   'CONTACT', 'TELEPHONE', 'EMAIL', 'ADRESSE', 'CP', 'VILLE',
   'TOTAL_HT_PONCTUEL', 'TOTAL_HT_MENSUEL', 'TOTAL_HT', 'TOTAL_TVA', 'TOTAL_TTC',
-  'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE', 'VALIDITE', 'LIEN_PDF', 'NOTES',
-  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS'
+  'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE', 'VALIDITE', 'LIEN_PDF', 'PHOTOS', 'NOTES',
+  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS', 'OBJET', 'LOGEMENT_PLUS_2_ANS', 'TAUX_TVA'
+];
+
+var ENTETES_LIGNES_ = [
+  'NUMERO', 'ORDRE', 'CATEGORIE', 'REFERENCE', 'DESIGNATION', 'DETAIL', 'QTE', 'UNITE',
+  'PU_HT', 'REMISE_PCT', 'TYPE', 'TVA', 'TOTAL_HT'
 ];
 
 /**
@@ -164,12 +167,46 @@ function majStructure_() {
       shD.getRange(1, apres + 1, 1, 3)
         .setValues([['TYPE_CLIENT', 'SIRET_CLIENT', 'TVA_CLIENT']])
         .setFontWeight('bold').setBackground('#1f2937').setFontColor('#ffffff');
+      en = shD.getRange(1, 1, 1, shD.getLastColumn()).getValues()[0]
+        .map(function (x) { return String(x).trim(); });
     }
+    // toute colonne prévue et encore absente est ajoutée à la fin,
+    // sans jamais déplacer celles qui portent déjà des données
+    ENTETES_DEVIS_.forEach(function (h) {
+      if (en.indexOf(h) >= 0) return;
+      var c = shD.getLastColumn() + 1;
+      shD.getRange(1, c).setValue(h)
+        .setFontWeight('bold').setBackground('#1f2937').setFontColor('#ffffff');
+      en.push(h);
+    });
   }
+  var shL = ss.getSheetByName(SH.LIGNES);
+  if (shL && shL.getLastColumn() > 0) {
+    var enL = shL.getRange(1, 1, 1, shL.getLastColumn()).getValues()[0]
+      .map(function (x) { return String(x).trim(); });
+    ENTETES_LIGNES_.forEach(function (h) {
+      if (enL.indexOf(h) >= 0) return;
+      var c = shL.getLastColumn() + 1;
+      shL.getRange(1, c).setValue(h)
+        .setFontWeight('bold').setBackground('#1f2937').setFontColor('#ffffff');
+      enL.push(h);
+    });
+  }
+
   var reg = lireReglages_(), shR = ss.getSheetByName(SH.REGLAGES);
   if (shR) {
     REGLAGES_DEFAUT_.forEach(function (r) {
       if (!(r[0] in reg)) shR.appendRow(r);
+    });
+    // Réglages d'identité laissés vides : on y met la valeur par défaut.
+    // Volontairement limité à cette liste, pour ne jamais réécrire un texte vidé exprès.
+    var aRemplir = ['societe_tel', 'societe_email', 'societe_site', 'societe_capital',
+                    'banque_nom', 'banque_iban', 'banque_bic', 'conditions_paiement',
+                    'paiement_pct', 'clause_reserve', 'mentions_penalites'];
+    REGLAGES_DEFAUT_.forEach(function (r) {
+      if (aRemplir.indexOf(r[0]) < 0) return;
+      if (String(reg[r[0]] === undefined ? '' : reg[r[0]]).trim() !== '') return;
+      ecrireReglage_(r[0], r[1]);
     });
   }
 }
@@ -179,10 +216,12 @@ var REGLAGES_DEFAUT_ = [
   ['societe_forme', 'SARL au capital de 0 €', 'Forme juridique + capital'],
   ['societe_adresse', '1 rue Exemple', ''],
   ['societe_cp_ville', '56000 Vannes', ''],
-  ['societe_tel', '00 00 00 00 00', ''],
-  ['societe_email', 'contact@exemple.fr', ''],
+  ['societe_tel', '+33 6 73 35 76 05', ''],
+  ['societe_email', 'breizhbrillance@gmail.com', ''],
+  ['societe_site', 'breizhbrillance.fr', 'Site imprimé sous l\'e-mail'],
+  ['societe_capital', '1 818 €', 'Imprimé sous le SIRET'],
   ['societe_siret', '000 000 000 00000', 'Obligatoire sur un devis'],
-  ['societe_tva', 'FR00000000000', 'N° TVA intracommunautaire'],
+  ['societe_tva', 'FR69991595711', 'N° TVA intracommunautaire — à faire confirmer par le comptable'],
   ['societe_rcs', 'RCS Vannes 000 000 000', ''],
   ['tva_defaut', '20', 'Taux de TVA par défaut en %'],
   ['validite_jours', '30', 'Durée de validité du devis en jours'],
@@ -192,24 +231,53 @@ var REGLAGES_DEFAUT_ = [
   ['prefixe_devis', 'DEV', 'Numéro : DEV-2026-KL-0001 (KL = initiales du commercial)'],
   ['dossier_racine_id', '', 'Dossier Drive racine — rempli automatiquement'],
   ['email_copie', '', 'Adresse qui reçoit une copie de chaque devis'],
+  ['banque_nom', 'CMB Saint Avé', 'Coordonnées bancaires imprimées sur le devis'],
+  ['banque_iban', 'FR76 1558 9569 3900 1258 9684 096', ''],
+  ['banque_bic', 'CMBRFR2BXXX', ''],
+  ['paiement_pct', '100', 'Part à régler — « 100 % soit 1 210,83 € : … »'],
+  ['conditions_paiement', 'Paiement comptant.', 'Suite de la ligne ci-dessus'],
+  ['clause_reserve', 'CLAUSE DE RÉSERVE DE PROPRIÉTÉ : Conformément à la loi 80.335 du 12 mai 1980, nous réservons la propriété des produits et marchandises, objets des présents débits, jusqu\'au paiement de l\'intégralité du prix et de ses accessoires. En cas de non paiement total ou partiel du prix de l\'échéance pour quelque cause que ce soit, de convention expresse, nous nous réservons la faculté, sans formalités, de reprendre matériellement possession de ces produits ou marchandises à vos frais, risques et périls.', 'Bas de page'],
+  ['mentions_penalites', 'Pénalité de retard : 3 fois le taux d\'intérêt légal après date d\'échéance. Escompte pour règlement anticipé : 0 % (sauf condition particulière définie dans les conditions de règlement). Le montant de l\'indemnité forfaitaire pour frais de recouvrement prévue au douzième alinéa de l\'article L441-6 est fixé à 40 euros en matière commerciale.', 'Bas de page'],
+  ['mentions_credit_impot', '', 'Crédit d\'impôt services à la personne — à ne remplir qu\'une fois la déclaration SAP obtenue'],
   ['sel_codes', '', 'Généré automatiquement — ne pas modifier']
 ];
 
 var CATALOGUE_DEFAUT_ = [
-  ['Bureaux', 'Nettoyage de bureaux', 'Sols, sanitaires, points de contact, vidage corbeilles', 'm²/mois', 1.2, 20, 'MENSUEL', 'OUI'],
-  ['Bureaux', 'Passage supplémentaire', 'Intervention ponctuelle hors contrat', 'passage', 65, 20, 'PONCTUEL', 'OUI'],
-  ['Vitrerie', 'Nettoyage de vitrerie', 'Intérieur + extérieur, accès de plain-pied', 'm²', 3.5, 20, 'PONCTUEL', 'OUI'],
-  ['Vitrerie', 'Vitrerie sous contrat', 'Passage trimestriel', 'm²/mois', 1.1, 20, 'MENSUEL', 'OUI'],
-  ['Remise en état', 'Remise en état après travaux', 'Dépoussiérage complet, traces de peinture, sols', 'm²', 4.5, 20, 'PONCTUEL', 'OUI'],
-  ['Remise en état', 'Nettoyage de fin de bail', 'Logement vide, cuisine et sanitaires compris', 'm²', 5, 20, 'PONCTUEL', 'OUI'],
-  ['Copropriété', 'Entretien des parties communes', 'Halls, escaliers, local poubelles', 'mois', 250, 20, 'MENSUEL', 'OUI'],
-  ['Copropriété', 'Sortie et rentrée des containers', '', 'mois', 60, 20, 'MENSUEL', 'OUI'],
-  ['Sols', 'Décapage / métallisation', 'Sols plastiques', 'm²', 6, 20, 'PONCTUEL', 'OUI'],
-  ['Sols', 'Shampoing moquette', 'Injection-extraction', 'm²', 3.8, 20, 'PONCTUEL', 'OUI'],
-  ['Divers', 'Main d\'œuvre', 'Taux horaire agent de propreté', 'heure', 28, 20, 'PONCTUEL', 'OUI'],
-  ['Divers', 'Fournitures et consommables', 'Papier, savon, sacs', 'mois', 45, 20, 'MENSUEL', 'OUI'],
-  ['Divers', 'Frais de déplacement', '', 'forfait', 25, 20, 'PONCTUEL', 'OUI']
+  ['Remise en état des sols', 'Nettoyage approfondi des plinthes et angles', '', 'm2', 0.20, 10, 'PONCTUEL', 'OUI'],
+  ['Remise en état des sols', 'Aspiration complète des sols', '', 'm2', 0.40, 10, 'PONCTUEL', 'OUI'],
+  ['Remise en état des sols', 'Décapage des sols au décapant laitance', '', 'm2', 0.50, 10, 'PONCTUEL', 'OUI'],
+  ['Remise en état des sols', 'Lavage humide et désinfection des sols', '', 'm2', 0.45, 10, 'PONCTUEL', 'OUI'],
+  ['Nettoyage des vitrages et menuiseries', 'Nettoyage des vitrages intérieurs/extérieurs', '', 'm2', 8, 10, 'PONCTUEL', 'OUI'],
+  ['Nettoyage des vitrages et menuiseries', 'Nettoyage complet des menuiseries, cadres et rails', '', 'm2', 4, 10, 'PONCTUEL', 'OUI'],
+  ['Nettoyage des vitrages et menuiseries', 'Nettoyage des volets roulants', '', 'm2', 2, 10, 'PONCTUEL', 'OUI'],
+  ['Remise en état de la cuisine', 'Nettoyage intérieur de la cuisine', '', 'forfait', 30, 10, 'PONCTUEL', 'OUI'],
+  ['Remise en état de la cuisine', 'Nettoyage extérieur de la cuisine', '', 'forfait', 20, 10, 'PONCTUEL', 'OUI'],
+  ['Chambres et pièces diverses', 'Nettoyage intérieur/extérieur des étagères, meubles, moulures et surfaces en relief', '', 'pièce(s)', 10, 10, 'PONCTUEL', 'OUI'],
+  ['Nettoyage des sanitaires et pièces d\'eau', 'Nettoyage et désinfection WC et lavabos', '', 'pièce(s)', 40, 10, 'PONCTUEL', 'OUI'],
+  ['Nettoyage des sanitaires et pièces d\'eau', 'Nettoyage robinetteries et faïences', '', 'pièce(s)', 15, 10, 'PONCTUEL', 'OUI'],
+  ['Nettoyage des sanitaires et pièces d\'eau', 'Nettoyage parois vitrées', '', 'pièce(s)', 30, 10, 'PONCTUEL', 'OUI'],
+  ['Finitions générales et livraison', 'Contrôle qualité et reprises générales', '', 'forfait', 10, 10, 'PONCTUEL', 'OUI']
 ];
+
+/** Remplace le contenu du CATALOGUE par la grille de prix de référence. */
+function chargerGrillePrix() {
+  var ui = SpreadsheetApp.getUi();
+  var rep = ui.alert('Remplacer le catalogue ?',
+    'Les ' + CATALOGUE_DEFAUT_.length + ' prestations de la grille de prix vont remplacer le contenu ' +
+    'actuel de l\'onglet CATALOGUE.\n\nLes anciennes lignes seront effacées (annulable par Ctrl+Z ' +
+    'ou par l\'historique des versions du classeur).\n\nContinuer ?', ui.ButtonSet.YES_NO);
+  if (rep !== ui.Button.YES) return;
+
+  var sh = SpreadsheetApp.getActive().getSheetByName(SH.CATALOGUE);
+  if (!sh) return ui.alert('Onglet CATALOGUE introuvable. Lance d\'abord « 1. Initialiser le fichier ».');
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 8).clearContent();
+  sh.getRange(2, 1, CATALOGUE_DEFAUT_.length, 8).setValues(CATALOGUE_DEFAUT_);
+  sh.setColumnWidth(1, 250); sh.setColumnWidth(2, 340); sh.setColumnWidth(3, 200);
+  ui.alert(CATALOGUE_DEFAUT_.length + ' prestations chargées.\n\n' +
+    'Le taux de TVA indiqué ici n\'est qu\'une valeur de repli : sur le terrain, ' +
+    'l\'application applique 20 % pour un professionnel, 10 % ou 20 % pour un particulier ' +
+    'selon l\'âge du logement.');
+}
 
 /* ============================ API ============================ */
 
@@ -218,31 +286,61 @@ function reponse_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/** GET ?action=config -> catalogue + réglages + commerciaux (sans les codes en clair) */
+/**
+ * GET : ne publie plus rien.
+ * Le catalogue, les réglages et la liste des commerciaux ne sortent qu'après
+ * vérification du nom et du code, par POST. Avant, l'adresse — qui est publique,
+ * puisqu'elle figure dans l'application — laissait lire les empreintes des codes
+ * et le grain de sel qui sert à les calculer : de quoi retrouver un code court
+ * en quelques secondes hors ligne.
+ */
 function doGet(e) {
-  try {
-    var action = (e && e.parameter && e.parameter.action) || 'config';
-    if (action !== 'config') return reponse_({ ok: false, erreur: 'action inconnue' });
-    var reg = lireReglages_();
-    var sel = String(reg.sel_codes || '');
-    delete reg.sel_codes;
-    delete reg.dossier_racine_id;
-    delete reg.dossier_drive_id;
-    delete reg.email_copie;
-    return reponse_({
-      ok: true,
-      maj: new Date().toISOString(),
-      sel: sel,
-      compteurs: compteurs_(),      // dernier numéro utilisé par commercial : évite
-      reglages: reg,                // qu'un téléphone réinstallé reparte à 0001
-      catalogue: lireCatalogue_(),
-      commerciaux: lireCommerciaux_().map(function (c) {
-        return { nom: c.nom, empreinte: empreinte_(c.nom, c.code, sel) };
-      })
-    });
-  } catch (err) {
-    return reponse_({ ok: false, erreur: String(err) });
-  }
+  return reponse_({ ok: true, service: 'devis', message: 'Service en ligne. Identification requise.' });
+}
+
+/** Nom comparé sans tenir compte de la casse, des accents ni des espaces en trop. */
+function normNom_(s) {
+  s = String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+  return s.replace(/[àáâäã]/g, 'a').replace(/[èéêë]/g, 'e').replace(/[ìíîï]/g, 'i')
+          .replace(/[òóôöõ]/g, 'o').replace(/[ùúûü]/g, 'u').replace(/[ç]/g, 'c');
+}
+
+function trouverCommercial_(nom) {
+  var n = normNom_(nom), out = null;
+  lireCommerciaux_().forEach(function (c) { if (normNom_(c.nom) === n) out = c; });
+  return out;
+}
+
+/**
+ * Freine les essais répétés sur un même nom : 10 échecs par quart d'heure.
+ * Sans ça, l'adresse étant publique, un code court se teste en ligne.
+ */
+function essaisRestants_(nom) {
+  var cache = CacheService.getScriptCache();
+  var cle = 'essais_' + normNom_(nom);
+  return { cache: cache, cle: cle, n: Number(cache.get(cle) || 0) };
+}
+function noterEchec_(nom) {
+  var e = essaisRestants_(nom);
+  e.cache.put(e.cle, String(e.n + 1), 900);
+}
+function tropDEssais_(nom) {
+  return essaisRestants_(nom).n >= 10;
+}
+
+/** Ce que l'application reçoit une fois le commercial reconnu. */
+function config_() {
+  var reg = lireReglages_();
+  delete reg.sel_codes;
+  delete reg.dossier_racine_id;
+  delete reg.dossier_drive_id;
+  delete reg.email_copie;
+  return {
+    maj: new Date().toISOString(),
+    compteurs: compteurs_(),    // dernier numéro par commercial : évite qu'un
+    reglages: reg,              // téléphone réinstallé reparte à 0001
+    catalogue: lireCatalogue_()
+  };
 }
 
 /** POST {action:'sync', nom, code, devis, pdf(base64)} */
@@ -250,12 +348,24 @@ function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
     var d = JSON.parse(e.postData.contents);
-    if (d.action !== 'sync') return reponse_({ ok: false, erreur: 'action inconnue' });
+    var actions = ['connexion', 'config', 'sync', 'photo'];
+    if (actions.indexOf(d.action) < 0) return reponse_({ ok: false, erreur: 'action inconnue' });
 
-    var com = null;
-    lireCommerciaux_().forEach(function (c) { if (c.nom === d.nom) com = c; });
-    if (!com) return reponse_({ ok: false, erreur: 'Commercial inconnu : ' + d.nom });
-    if (com.code && String(d.code || '') !== com.code) return reponse_({ ok: false, erreur: 'Code incorrect' });
+    // Un seul et même refus, que le nom soit inconnu ou le code faux.
+    if (tropDEssais_(d.nom)) {
+      return reponse_({ ok: false, refus: true, erreur: 'Trop d\'essais. Réessaie dans un quart d\'heure.' });
+    }
+    var com = trouverCommercial_(d.nom);
+    if (!com || (com.code && String(d.code || '') !== com.code)) {
+      noterEchec_(d.nom);
+      return reponse_({ ok: false, refus: true, erreur: 'Nom ou code incorrect' });
+    }
+
+    if (d.action === 'connexion') {
+      return reponse_({ ok: true, nom: com.nom, config: config_() });
+    }
+    if (d.action === 'config') return reponse_({ ok: true, config: config_() });
+    if (d.action === 'photo') return reponse_(enregistrerPhoto_(d));
 
     lock.waitLock(30000);
     var res = enregistrer_(d, com);
@@ -349,18 +459,27 @@ function enregistrer_(d, com) {
     SIGNATAIRE: devis.signataire || '', VALIDITE: new Date(devis.validite), LIEN_PDF: lienPdf,
     NOTES: (devis.notes || '') +
       (renumerote ? ' [numéro d\'origine sur le PDF du client : ' + renumerote + ']' : ''),
-    RECU_LE: new Date(), ID_APPAREIL: d.appareil || '', ID_DEVIS: d.id || ''
+    RECU_LE: new Date(), ID_APPAREIL: d.appareil || '', ID_DEVIS: d.id || '',
+    OBJET: devis.objet || '',
+    LOGEMENT_PLUS_2_ANS: (c.plus2ans === true ? 'OUI' : (c.plus2ans === false ? 'NON' : '')),
+    TAUX_TVA: tauxPrincipal_(devis)
   };
   shD.appendRow(en.map(function (h) { return v.hasOwnProperty(h) ? v[h] : ''; }));
 
   var shL = ss.getSheetByName(SH.LIGNES);
+  var enL = shL.getRange(1, 1, 1, shL.getLastColumn()).getValues()[0]
+    .map(function (x) { return String(x).trim(); });
   var rows = (devis.lignes || []).map(function (l, idx) {
-    return [devis.numero, idx + 1, l.categorie || '', l.designation || '', l.detail || '',
-      Number(l.qte) || 0, l.unite || '', Number(l.pu) || 0, l.type || 'PONCTUEL',
-      Number(l.tva) || 0,
-      Math.round((Number(l.qte) || 0) * (Number(l.pu) || 0) * (1 - (Number(devis.remise) || 0) / 100) * 100) / 100];
+    var vl = {
+      NUMERO: devis.numero, ORDRE: idx + 1, CATEGORIE: l.categorie || '',
+      REFERENCE: l.reference || '', DESIGNATION: l.designation || '', DETAIL: l.detail || '',
+      QTE: Number(l.qte) || 0, UNITE: l.unite || '', PU_HT: Number(l.pu) || 0,
+      REMISE_PCT: Number(l.rem) || 0, TYPE: l.type || 'PONCTUEL', TVA: Number(l.tva) || 0,
+      TOTAL_HT: montantLigne_(l)
+    };
+    return enL.map(function (h) { return vl.hasOwnProperty(h) ? vl[h] : ''; });
   });
-  if (rows.length) shL.getRange(shL.getLastRow() + 1, 1, rows.length, 11).setValues(rows);
+  if (rows.length) shL.getRange(shL.getLastRow() + 1, 1, rows.length, enL.length).setValues(rows);
 
   // e-mails
   try {
@@ -390,6 +509,54 @@ function enregistrer_(d, com) {
 
   return { ok: true, doublon: false, numero: devis.numero, pdfUrl: lienPdf,
            renumerote: renumerote || undefined };
+}
+
+/**
+ * Photo prise sur le site, rangée dans le même dossier que le PDF du devis.
+ * Elle arrive après le devis, dans un appel séparé : une photo lourde qui
+ * n'arrive pas ne doit jamais bloquer l'enregistrement du devis lui-même.
+ */
+function enregistrerPhoto_(d) {
+  if (!d.image) return { ok: false, erreur: 'photo vide' };
+  var reg = lireReglages_();
+  var dossier = dossierDevis_(reg, new Date(d.date), d.commercial);
+
+  var n = Number(d.index) || 1;
+  var nom = 'Devis-' + String(d.numero || 'sans-numero') + '-photo-' +
+            ('0' + n).slice(-2) + '.jpg';
+
+  // déjà reçue ? (l'appareil peut réessayer après une coupure de réseau)
+  var it = dossier.getFilesByName(nom);
+  if (it.hasNext()) return { ok: true, doublon: true, url: it.next().getUrl() };
+
+  var blob = Utilities.newBlob(Utilities.base64Decode(d.image), 'image/jpeg', nom);
+  var f = dossier.createFile(blob);
+  noterPhotos_(d.numero, dossier);
+  return { ok: true, url: f.getUrl() };
+}
+
+/** Compte les photos rattachées à un devis et l'écrit dans la colonne PHOTOS. */
+function noterPhotos_(numero, dossier) {
+  try {
+    var sh = SpreadsheetApp.getActive().getSheetByName(SH.DEVIS);
+    if (!sh || sh.getLastRow() < 2) return;
+    var en = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+      .map(function (x) { return String(x).trim(); });
+    var cNum = en.indexOf('NUMERO'), cPh = en.indexOf('PHOTOS');
+    if (cNum < 0 || cPh < 0) return;
+
+    var n = 0, it = dossier.getFiles();
+    while (it.hasNext()) {
+      if (it.next().getName().indexOf('Devis-' + numero + '-photo-') === 0) n++;
+    }
+    var nums = sh.getRange(2, cNum + 1, sh.getLastRow() - 1, 1).getValues();
+    for (var i = 0; i < nums.length; i++) {
+      if (String(nums[i][0]) === String(numero)) {
+        sh.getRange(i + 2, cPh + 1).setValue(n + ' photo' + (n > 1 ? 's' : ''));
+        return;
+      }
+    }
+  } catch (e) { /* le comptage ne doit jamais faire échouer l'envoi */ }
 }
 
 /* ========================== LECTURES ========================== */
@@ -427,12 +594,6 @@ function lireCommerciaux_() {
     .map(function (r) {
       return { nom: String(r[0]).trim(), email: String(r[1] || '').trim(), code: String(r[2] || '').trim() };
     });
-}
-
-function empreinte_(nom, code, sel) {
-  var brut = nom + '|' + code + '|' + sel;
-  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, brut, Utilities.Charset.UTF_8)
-    .map(function (b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
 }
 
 function ecrireReglage_(cle, valeur) {
@@ -474,6 +635,23 @@ function dossierDevis_(reg, date, commercial) {
   dossier = sousDossier_(dossier, ('0' + (d.getMonth() + 1)).slice(-2) + ' - ' + MOIS_[d.getMonth()]);
   dossier = sousDossier_(dossier, commercial || 'Sans commercial');
   return dossier;
+}
+
+/** Montant HT d'une ligne, remise de ligne déduite. */
+function montantLigne_(l) {
+  return Math.round((Number(l.qte) || 0) * (Number(l.pu) || 0) *
+                    (1 - (Number(l.rem) || 0) / 100) * 100) / 100;
+}
+
+/** Taux de TVA le plus représenté dans le devis, pour la colonne de suivi. */
+function tauxPrincipal_(devis) {
+  var par = {}, meilleur = '', max = -1;
+  (devis.lignes || []).forEach(function (l) {
+    var t = Number(l.tva) || 0;
+    par[t] = (par[t] || 0) + montantLigne_(l);
+    if (par[t] > max) { max = par[t]; meilleur = t; }
+  });
+  return meilleur === '' ? '' : meilleur + ' %';
 }
 
 function eur_(n) {

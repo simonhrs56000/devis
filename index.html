@@ -98,8 +98,10 @@
   .tot span:first-child{color:var(--mut)}
   .ok{background:#EAF2FB;border:1px solid #B9D2EC;color:#00396E;border-radius:10px;padding:16px;text-align:center}
   .err{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:10px;padding:12px;margin-bottom:12px;font-size:14px}
-  .hist{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
-  .hist .i{flex:1;min-width:0}
+  .hist{padding:12px 0;border-bottom:1px solid var(--line)}
+  .hist .i{min-width:0}
+  .hist .acts{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap}
+  .hist .acts .btn{width:auto;flex:0 0 auto}
   .hist b{display:block;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hist span{font-size:12.5px;color:var(--mut)}
   .pt{display:inline-block;width:8px;height:8px;min-width:8px;border-radius:99px;
@@ -123,6 +125,38 @@
   .choix.on{border-color:var(--acc);background:#EAF2FB;box-shadow:inset 0 0 0 1px var(--acc)}
   .choix.on b{color:var(--acc-d)}
   .choix.on b::after{content:' ✓';color:var(--acc)}
+  /* choix binaire compact — l'âge du logement, qui décide du taux de TVA */
+  .bsel{background:#fff;border:1.5px solid var(--line);color:var(--txt);font-size:13.5px;
+        padding:11px 6px;font-weight:500;line-height:1.3}
+  .bsel.on{border-color:var(--acc);background:#EAF2FB;color:var(--acc-d);font-weight:700}
+  .bsel:active{transform:scale(.97)}
+  .tvaInfo{background:#EAF2FB;border:1px solid #B9D2EC;color:#00396E;border-radius:9px;
+           padding:9px 11px;font-size:13px;margin-top:10px;line-height:1.45}
+  /* suggestions : clients déjà connus + annuaire des entreprises */
+  .sugg{border:1px solid var(--line);border-radius:10px;margin-top:5px;overflow:hidden;background:#fff}
+  .sugg button{display:block;width:100%;text-align:left;background:#fff;border:0;
+               border-bottom:1px solid var(--line);padding:10px 12px;border-radius:0}
+  .sugg button:last-child{border-bottom:0}
+  .sugg button:active{background:#eef3f9}
+  .sugg b{display:block;font-size:14.5px;color:var(--txt);font-weight:600}
+  .sugg em{display:block;font-size:12px;color:var(--mut);margin-top:2px;font-style:normal}
+  .sugg .src{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+             color:var(--acc);background:#E4EDF7;border-radius:99px;padding:1px 7px;margin-top:5px}
+  .sugg .att{padding:10px 12px;font-size:12.5px;color:var(--mut)}
+  /* photos du site */
+  .photos{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .photos figure{position:relative;margin:0;width:78px;height:78px;border-radius:9px;
+                 overflow:hidden;border:1px solid var(--line);background:#eef1f5}
+  .photos img{width:100%;height:100%;object-fit:cover;display:block}
+  .photos figure button{position:absolute;top:2px;right:2px;width:22px;height:22px;padding:0;
+    border-radius:99px;background:rgba(17,24,39,.72);color:#fff;font-size:13px;line-height:1}
+  /* calculette de surface */
+  .piece{display:flex;gap:7px;align-items:flex-end;margin-bottom:8px}
+  .piece>div{flex:1;min-width:0}
+  .piece label{margin:0 0 3px;font-size:11px}
+  .piece input{padding:9px;font-size:15px}
+  .piece .eq{flex:0 0 68px;font-size:13px;text-align:right;padding-bottom:11px;color:var(--mut)}
+  .piece .x{flex:0 0 auto;padding-bottom:9px}
 </style>
 </head>
 <body>
@@ -143,19 +177,13 @@
 <main>
   <div id="erreur" class="err hide"></div>
 
-  <!-- ÉTAPE 0 : PREMIÈRE INSTALLATION -->
-  <section id="e0" class="card hide">
-    <h2>Première utilisation</h2>
-    <p class="mini" id="msg0">Connecte-toi une première fois à Internet : l'application télécharge le catalogue
-      et les tarifs, puis elle fonctionne ensuite entièrement hors connexion.</p>
-    <button class="btn" style="margin-top:12px" onclick="chargerConfig(true, this)">Télécharger le catalogue</button>
-  </section>
-
   <!-- CONNEXION — écran à part : il disparaît de la chaîne une fois la connexion faite -->
   <section id="eCo" class="card hide">
     <h2>Qui établit les devis ?</h2>
-    <label>Commercial</label>
-    <select id="fCommercial"></select>
+    <label>Nom du commercial</label>
+    <input id="fCommercial" type="text" autocomplete="username" autocapitalize="characters"
+           autocorrect="off" spellcheck="false" placeholder="Ton nom, tel qu'au bureau"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('fCode').focus();}">
     <label>Code personnel</label>
     <div class="pw">
       <input id="fCode" type="password" inputmode="text" autocomplete="current-password"
@@ -171,8 +199,11 @@
       </button>
     </div>
     <div class="mini">Au moins 4 caractères, dont un chiffre et un caractère spécial (! ? * # &amp; - _ …).</div>
+    <div id="premiere" class="tvaInfo hide">Première connexion sur cet appareil : il faut du réseau.
+      L'application télécharge le catalogue et les tarifs, puis fonctionne ensuite hors connexion.</div>
     <button class="btn" style="margin-top:16px" id="bCo" onclick="verifierCommercial(this)">Se connecter</button>
-    <div class="mini">Le code est retenu sur cet appareil : à saisir une seule fois.</div>
+    <div class="mini">La connexion dure le temps de la session : elle tient tant que l'application
+      reste ouverte, même en arrière-plan, et se referme dès qu'elle est fermée.</div>
   </section>
 
   <!-- ÉTAPE 1 : TYPE DE CLIENT -->
@@ -193,7 +224,9 @@
     <h2 id="tClient">Client</h2>
     <div id="blocPro">
       <label>Raison sociale</label>
-      <input id="cSociete" autocomplete="organization">
+      <input id="cSociete" autocomplete="off" placeholder="Tape le nom, l'annuaire complète"
+             oninput="suggerer('soc')" onfocus="suggerer('soc')">
+      <div id="suggSoc" class="sugg hide"></div>
       <label>SIRET</label>
       <input id="cSiret" inputmode="numeric" placeholder="14 chiffres" onblur="deduireTva()">
       <label>N° de TVA intracommunautaire</label>
@@ -201,7 +234,8 @@
       <div class="mini" id="mSiret">Le n° de TVA se complète tout seul à partir du SIRET.</div>
     </div>
     <label id="lContact">Interlocuteur</label>
-    <input id="cContact" autocomplete="name">
+    <input id="cContact" autocomplete="off" oninput="suggerer('con')" onfocus="suggerer('con')">
+    <div id="suggCon" class="sugg hide"></div>
     <div class="row">
       <div><label>Téléphone</label><input id="cTel" type="tel" inputmode="tel"></div>
       <div><label>E-mail</label><input id="cEmail" type="email" inputmode="email" autocapitalize="off"></div>
@@ -212,13 +246,24 @@
       <div style="max-width:130px"><label>Code postal</label><input id="cCp" inputmode="numeric"></div>
       <div><label>Ville</label><input id="cVille"></div>
     </div>
+    <div id="blocAge" class="hide">
+      <label>Le logement a-t-il plus de deux ans ?</label>
+      <div class="row">
+        <button class="bsel" id="ageOui" onclick="setLogement(true)">Plus de 2 ans<br>TVA 10 %</button>
+        <button class="bsel" id="ageNon" onclick="setLogement(false)">Moins de 2 ans<br>TVA 20 %</button>
+      </div>
+    </div>
+    <div id="tvaInfo" class="tvaInfo hide"></div>
   </section>
 
   <!-- ÉTAPE 3 : PRESTATIONS -->
   <section id="e3" class="hide">
     <div class="card">
       <h2>Prestations</h2>
-      <div class="row">
+      <label>Objet du devis</label>
+      <input id="fObjet" placeholder="Nettoyage maison fin de chantier" oninput="sauverBrouillon()">
+      <div class="mini">S'imprime en titre, en haut du devis.</div>
+      <div class="row" style="margin-top:14px">
         <button class="btn sm" style="flex:1" onclick="ouvrirCatalogue()">+ Catalogue</button>
         <button class="btn sec sm" style="flex:1" onclick="ajouterLibre()">+ Ligne libre</button>
       </div>
@@ -231,8 +276,6 @@
     <div class="card">
       <h2>Récapitulatif</h2>
       <div id="recap"></div>
-      <label>Remise commerciale (%)</label>
-      <input id="fRemise" type="number" inputmode="decimal" min="0" max="100" step="0.5" value="0" oninput="calculer()">
       <label>Précisions / conditions particulières</label>
       <textarea id="fNotes" placeholder="Fréquence de passage, horaires d'intervention, accès, produits fournis…"></textarea>
     </div>
@@ -271,6 +314,7 @@
       <div class="mini" id="okEtat" style="color:inherit;opacity:.85"></div>
     </div>
     <button class="btn" onclick="partagerDernier(this)">Envoyer / partager le PDF</button>
+    <button class="btn sec" style="margin-top:10px" onclick="photosDernier()">Ajouter des photos du site</button>
     <button class="btn sec" style="margin-top:10px" onclick="nouveauDevis()">Nouveau devis</button>
   </section>
 
@@ -286,10 +330,27 @@
     <button class="btn" onclick="nouveauDevis()">Nouveau devis</button>
     <div class="mini" style="text-align:center;margin-top:14px">
       Catalogue mis à jour le <span id="majCat">—</span> ·
-      <a href="#" onclick="chargerConfig(true);return false;">actualiser</a><br>
+      <a href="#" onclick="rafraichirConfig();return false;">actualiser</a><br>
       Connecté : <b id="quiSuisJe">—</b> ·
-      <a href="#" onclick="deconnexion();return false;">changer de commercial</a>
+      <a href="#" onclick="deconnexion();return false;">se déconnecter</a>
     </div>
+  </section>
+
+  <!-- PHOTOS D'UN DEVIS — écran à part, après la signature -->
+  <section id="e7" class="hide">
+    <div class="card">
+      <h2>Photos du site</h2>
+      <div id="phDevis" style="font-size:15px;font-weight:600"></div>
+      <div class="mini" style="margin-top:2px">Pour l'équipe qui interviendra et pour justifier le
+        chiffrage. Elles partent dans le dossier Drive du devis, jamais sur le PDF remis au client.</div>
+      <input id="fPhotos" type="file" accept="image/*" capture="environment" multiple
+             class="hide" onchange="ajouterPhotos(this)">
+      <button class="btn" style="margin-top:12px"
+              onclick="document.getElementById('fPhotos').click()">Prendre des photos</button>
+      <div id="photosL" class="photos"></div>
+      <div class="mini" id="phEtat"></div>
+    </div>
+    <button class="btn sec" onclick="ouvrirHistorique()">Retour à mes devis</button>
   </section>
 </main>
 
@@ -323,11 +384,27 @@
   <div class="dlg-b" id="dlgB"></div>
 </dialog>
 
-<script src="config.js?v=9"></script>
-<script src="jspdf.umd.min.js?v=9"></script>
-<script src="police.js?v=9"></script>
-<script src="logo.js?v=9"></script>
-<script src="pdf.js?v=9"></script>
-<script src="app.js?v=9"></script>
+<!-- CALCULETTE DE SURFACE -->
+<dialog id="dlgSurf">
+  <div class="dlg-h">
+    <b style="flex:1;font-size:15px;align-self:center">Surface à nettoyer</b>
+    <button class="btn sec sm" onclick="fermerSurface()">Fermer</button>
+  </div>
+  <div class="dlg-b">
+    <div class="mini" style="margin:0 0 12px">Une ligne par pièce ou par zone. Laisse la largeur vide
+      pour saisir une surface déjà connue.</div>
+    <div id="surfL"></div>
+    <button class="btn sec sm" style="width:100%" onclick="ajouterPiece()">+ Ajouter une pièce</button>
+    <div class="tot big"><span style="color:inherit">Total</span><span id="surfTot">0 m²</span></div>
+    <button class="btn" onclick="appliquerSurface()">Reporter dans la quantité</button>
+  </div>
+</dialog>
+
+<script src="config.js?v=15"></script>
+<script src="jspdf.umd.min.js?v=15"></script>
+<script src="police.js?v=15"></script>
+<script src="logo.js?v=15"></script>
+<script src="pdf.js?v=15"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>
