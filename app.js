@@ -12,6 +12,8 @@ var TAUX = null;           // taux de TVA du devis, déduit des deux réponses c
 var CLIENTS = [];          // répertoire local, reconstruit depuis les devis déjà faits
 var SUGG = [];             // suggestions actuellement affichées
 var SURF = {ligne:null, pieces:[]};
+var ECRAN_AVANT = 1;       // d'où l'on vient quand on ouvre « Mes devis »
+var PHOTO_RETOUR = 6;      // d'où l'on vient quand on ouvre les photos d'un devis
 var ANNUAIRE = 'https://recherche-entreprises.api.gouv.fr/search';
 var DERNIER = null;        // dernier devis enregistré (pour le partage)
 var EN_COURS = false;
@@ -271,10 +273,45 @@ var ECRANS = ['eCo','e1','e2','e3','e4','e5','e6','e7'];
 function montrer(id){
   ECRANS.forEach(function(k){ $(k).classList.toggle('hide', k!==id); });
 }
+/* La barre du bas ne garde que le bouton Retour sur les écrans hors parcours :
+   « Mes devis » et les photos ne doivent jamais être une impasse. */
+function barreRetour(){
+  $('bar').classList.remove('hide');
+  $('bPrec').classList.remove('hide');
+  $('bTT').classList.add('hide');
+  $('bSuiv').classList.add('hide');
+}
+function barreComplete(){
+  $('bTT').classList.remove('hide');
+  $('bSuiv').classList.remove('hide');
+}
+
+/* Un seul bouton Retour, qui sait d'où l'on vient. */
+function revenir(){
+  if(ETAPE === 7){
+    return (PHOTO_RETOUR === 5) ? montrerTermine() : ouvrirHistorique();
+  }
+  if(ETAPE === 6){
+    if(ECRAN_AVANT === 5) return montrerTermine();
+    return etape(ECRAN_AVANT >= 1 && ECRAN_AVANT <= 4 ? ECRAN_AVANT : 1);
+  }
+  etape(ETAPE - 1);
+}
+
+function montrerTermine(){
+  ETAPE = 5;
+  montrer('e5');
+  $('steps').classList.add('hide');
+  $('bar').classList.add('hide');
+  $('hTitre').textContent = 'Terminé';
+  window.scrollTo(0,0);
+}
+
 function etape(n){
   if(n<1) n=1;
   ETAPE=n; erreur('');
   montrer('e'+n);
+  barreComplete();
   [1,2,3,4].forEach(function(i){ $('s'+i).classList.toggle('on', i<=n); });
   $('steps').classList.toggle('hide', n>=5);
   $('bar').classList.toggle('hide', n>=5 || n===1);   // au choix du type, les deux cartes suffisent
@@ -917,8 +954,10 @@ function ouvrirPhotos(id){
   PHOTO_ID = id;
   DB.get(id).then(function(e){
     if(!e){ PHOTO_ID = null; return; }
+    PHOTO_RETOUR = (ETAPE === 5) ? 5 : 6;
     ETAPE = 7; montrer('e7');
-    $('steps').classList.add('hide'); $('bar').classList.add('hide');
+    $('steps').classList.add('hide');
+    barreRetour();
     $('bHist').classList.remove('hide');
     $('hTitre').textContent = 'Photos';
     var c = (e.devis||{}).client || {};
@@ -1128,8 +1167,7 @@ function enregistrerSuite(b, envoi, moi, secours){
         ? 'Envoi au bureau en cours…'
         : 'Hors connexion : le devis part automatiquement dès que le réseau revient.';
       debloquer(b, secours);
-      montrer('e5'); $('steps').classList.add('hide'); $('bar').classList.add('hide');
-      $('hTitre').textContent='Terminé'; window.scrollTo(0,0);
+      montrerTermine();
       synchroniser(false);
     }, function(e){
       debloquer(b, secours);
@@ -1317,8 +1355,10 @@ function purger(){
 
 /* ====================== HISTORIQUE ====================== */
 function ouvrirHistorique(){
+  if(ETAPE >= 1 && ETAPE <= 5) ECRAN_AVANT = ETAPE;
   ETAPE=6; montrer('e6');
-  $('steps').classList.add('hide'); $('bar').classList.add('hide');
+  $('steps').classList.add('hide');
+  barreRetour();
   $('hTitre').textContent='Mes devis';
   var moi = session();
   $('quiSuisJe').textContent = (moi && moi.nom) || '—';
