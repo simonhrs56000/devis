@@ -201,6 +201,7 @@ function majStructure_() {
   }
 
   creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_);
+  formaterDates_(ss);
 
   var reg = lireReglages_(), shR = ss.getSheetByName(SH.REGLAGES);
   if (shR) {
@@ -607,7 +608,8 @@ function tracer_(lignes) {
   if (!lignes || !lignes.length) return;
   try {
     var ss = SpreadsheetApp.getActive();
-    var sh = ss.getSheetByName(SH.JOURNAL) || creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_);
+    var sh = ss.getSheetByName(SH.JOURNAL);
+    if (!sh) { sh = creerOnglet_(ss, SH.JOURNAL, ENTETES_JOURNAL_); formaterDates_(ss); }
     var en = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
       .map(function (x) { return String(x).trim(); });
     var recu = new Date();
@@ -626,6 +628,29 @@ function tracer_(lignes) {
     });
     sh.getRange(sh.getLastRow() + 1, 1, rows.length, en.length).setValues(rows);
   } catch (e) { /* le journal ne doit jamais faire échouer une opération */ }
+}
+
+/**
+ * Les dates sont enregistrées à la seconde près, mais une colonne au format
+ * « date » n'affiche que le jour. On impose donc le format complet.
+ */
+function formaterDates_(ss) {
+  try {
+    [[SH.JOURNAL, ['HORODATAGE', 'MOMENT'], 'dd/mm/yyyy HH:mm:ss', 145],
+     [SH.DEVIS,   ['RECU_LE'],              'dd/mm/yyyy HH:mm',    130]
+    ].forEach(function (cfg) {
+      var sh = ss.getSheetByName(cfg[0]);
+      if (!sh || sh.getLastColumn() < 1) return;
+      var en = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+        .map(function (x) { return String(x).trim(); });
+      cfg[1].forEach(function (nom) {
+        var i = en.indexOf(nom);
+        if (i < 0) return;
+        sh.getRange(2, i + 1, Math.max(sh.getMaxRows() - 1, 1), 1).setNumberFormat(cfg[2]);
+        sh.setColumnWidth(i + 1, cfg[3]);
+      });
+    });
+  } catch (e) { /* un souci de mise en forme ne doit rien interrompre */ }
 }
 
 /** Raccourci pour une seule ligne constatée par le serveur. */
