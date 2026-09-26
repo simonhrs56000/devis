@@ -126,13 +126,20 @@ var PDF = (function () {
     /* ---------------- émetteur / client ---------------- */
     var yB = Math.max(basLogo + 6, y + 4);
 
+    // Forme juridique, capital et immatriculation RCS : obligatoires sur un
+    // document commercial émis par une société. Le capital n'est répété que si
+    // la forme juridique ne le mentionne pas déjà.
+    var forme = txt(reg.societe_forme).trim();
+    var capitalDitDansForme = /capital/i.test(forme);
     var gauche = [{ t: txt(reg.societe_nom).toUpperCase(), b: true }];
-    [reg.societe_adresse, reg.societe_cp_ville, 'FRANCE',
+    [forme,
+     reg.societe_adresse, reg.societe_cp_ville, 'FRANCE',
      txt(reg.societe_tel).trim() ? 'Port. : ' + txt(reg.societe_tel) : '',
      reg.societe_email, reg.societe_site,
      txt(reg.societe_tva).trim() ? 'N° TVA Intracommunautaire : ' + txt(reg.societe_tva) : '',
      txt(reg.societe_siret).trim() ? 'N° SIRET : ' + txt(reg.societe_siret) : '',
-     txt(reg.societe_capital).trim() ? 'Capital : ' + txt(reg.societe_capital) : ''
+     txt(reg.societe_rcs).trim() ? txt(reg.societe_rcs) : '',
+     (!capitalDitDansForme && txt(reg.societe_capital).trim()) ? 'Capital : ' + txt(reg.societe_capital) : ''
     ].forEach(function (l) { if (txt(l).trim()) gauche.push({ t: txt(l) }); });
 
     var droite = [];
@@ -340,20 +347,81 @@ var PDF = (function () {
     doc.setDrawColor(TRAIT[0], TRAIT[1], TRAIT[2]).setLineWidth(0.2)
        .roundedRect(xS, y, wS, hS, 1.5, 1.5);
     police('normal', 7, GRIS);
+    var mentionSig = txt(reg.mention_manuscrite).trim() || 'Bon pour accord';
     if (devis.signature) {
-      doc.text('Bon pour accord — ' + txt(devis.signataire || c.contact || ''), xS + 3, y + 4.8);
+      doc.text('« ' + mentionSig + ' » — ' + txt(devis.signataire || c.contact || ''), xS + 3, y + 4.8);
       doc.text('Le ' + dateFr(devis.date), xS + 3, y + 8.2);
       try { doc.addImage(devis.signature, 'PNG', xS + 3, y + 9.6, wS - 6, hS - 12.6, undefined, 'FAST'); } catch (e) {}
     } else {
       doc.text('Date, signature du client précédée de la mention', xS + 3, y + 4.8);
-      doc.text('« Bon pour accord »', xS + 3, y + 8.2);
+      var mm = couper('« ' + mentionSig + ' »', wS - 6);
+      doc.text(mm, xS + 3, y + 8.2);
     }
     police('normal', 7, GRIS);
-    doc.text('Devis valable jusqu\'au ' + dateFr(devis.validite), M + 4, y + 4.8);
-    doc.text('Établi par ' + txt(devis.commercial), M + 4, y + 8.2);
+    var infos = ['Devis valable jusqu\'au ' + dateFr(devis.validite),
+                 'Établi par ' + txt(devis.commercial)];
+    if (txt(devis.delai).trim()) infos.push('Intervention : ' + txt(devis.delai));
+    var yi = y + 4.8;
+    infos.forEach(function (l) { doc.text(l, M + 4, yi); yi += 3.4; });
+
+    /* ---------------- formulaire de rétractation ----------------
+       Un contrat signé au domicile d'un particulier est conclu hors
+       établissement : le formulaire détachable doit accompagner le document.
+       Se désactive par le réglage bordereau_retractation = NON. */
+    if (particulier && String(txt(reg.bordereau_retractation) || 'OUI').toUpperCase() !== 'NON') {
+      doc.addPage();
+      var yr = 22;
+      police('bold', 12, MARQUE);
+      doc.text('FORMULAIRE DE RÉTRACTATION', M + 4, yr);
+      yr += 6;
+      police('normal', 8, GRIS);
+      doc.text('À compléter et à renvoyer uniquement si vous souhaitez vous rétracter du contrat.', M + 4, yr);
+      yr += 9;
+
+      police('normal', 9.5);
+      var dest = ['À l\'attention de ' + txt(reg.societe_nom) + ' :',
+                  [txt(reg.societe_adresse), txt(reg.societe_cp_ville)].filter(function(x){return x;}).join(' — '),
+                  txt(reg.societe_email)].filter(function (x) { return txt(x).trim(); });
+      dest.forEach(function (l) { doc.text(txt(l), M + 4, yr); yr += 5; });
+      yr += 4;
+
+      var corps = couper('Je vous notifie par la présente ma rétractation du contrat portant sur la ' +
+        'prestation de services ci-dessous :', R - M - 8);
+      doc.text(corps, M + 4, yr);
+      yr += corps.length * 5 + 4;
+
+      [['Devis n°', txt(devis.numero)],
+       ['Commandé le', dateFr(devis.date)],
+       ['Nom du consommateur', txt(devis.signataire || c.contact || '')],
+       ['Adresse du consommateur', [txt(c.adresse), txt(c.cp), txt(c.ville)]
+          .filter(function (x) { return x.trim(); }).join(' ')],
+       ['Date', ''],
+       ['Signature du consommateur', '(uniquement en cas de notification sur papier)']
+      ].forEach(function (l) {
+        police('normal', 9.5);
+        doc.text(l[0] + ' :', M + 4, yr);
+        if (l[1]) {
+          police('normal', 9.5, [55, 65, 81]);
+          doc.text(couper(l[1], R - M - 62)[0] || '', M + 60, yr);
+        }
+        doc.setDrawColor(TRAIT[0], TRAIT[1], TRAIT[2]).setLineWidth(0.2)
+           .line(M + 58, yr + 1.6, R - 4, yr + 1.6);
+        yr += l[0] === 'Signature du consommateur' ? 22 : 11;
+      });
+
+      yr += 4;
+      police('normal', 7.6, GRIS);
+      var rappel = couper('Ce droit s\'exerce dans un délai de quatorze jours à compter de la signature, ' +
+        'sans avoir à motiver votre décision ni à supporter de pénalité. Si vous demandez expressément ' +
+        'que l\'exécution commence avant la fin de ce délai, vous restez redevable des prestations ' +
+        'déjà réalisées à la date de votre rétractation.', R - M - 8);
+      doc.text(rappel, M + 4, yr);
+    }
 
     /* ---------------- pied de page sur toutes les pages ---------------- */
     var pied = [
+      txt(reg.assurance_rc),
+      particulier ? txt(reg.mediateur) : '',
       txt(reg.clause_reserve),
       txt(reg.mentions_penalites),
       particulier ? txt(reg.mentions_credit_impot) : '',

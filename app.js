@@ -1059,7 +1059,7 @@ function lireClient(){
 }
 function sauverBrouillon(){
   lsj('brouillon', {client:lireClient(), lignes:LIGNES, objet:val('fObjet'),
-                    plus2ans:PLUS2ANS, taux:TAUX, notes:val('fNotes')});
+                    plus2ans:PLUS2ANS, taux:TAUX, delai:val('fDelai'), notes:val('fNotes')});
 }
 function restaurer(b){
   LIGNES = b.lignes||[];
@@ -1069,6 +1069,7 @@ function restaurer(b){
   ['Societe','Siret','Tva','Contact','Tel','Email','Adresse','Cp','Ville'].forEach(function(k){
     $('c'+k).value = c[k.toLowerCase()]||''; });
   $('fObjet').value = b.objet||'';
+  $('fDelai').value = b.delai||'';
   PLUS2ANS = (b.plus2ans === true || b.plus2ans === false) ? b.plus2ans : null;
   TAUX = b.taux || null;
   majTva();
@@ -1142,6 +1143,7 @@ function enregistrerSuite(b, envoi, moi, secours){
       client: lireClient(),
       lignes: LIGNES.slice(),
       objet: val('fObjet'),
+      delai: val('fDelai'),
       remise: 0,        // la remise est portée par chaque ligne
       notes: val('fNotes'),
       signataire: val('fSignataire'),
@@ -1422,6 +1424,7 @@ function dupliquer(id, btn){
       var o = {}; for(var k in l){ if(l.hasOwnProperty(k)) o[k] = l[k]; } return o;
     });
     $('fObjet').value = d.objet || '';
+    $('fDelai').value = d.delai || '';
     $('fNotes').value = d.notes || '';
     sauverBrouillon();
     etape(2);
@@ -1435,7 +1438,7 @@ function nouveauDevis(){
   LIGNES = [];
   PHOTO_ID = null;
   cacherSugg();
-  ['cSociete','cSiret','cTva','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes','fObjet']
+  ['cSociete','cSiret','cTva','cContact','cTel','cEmail','cAdresse','cCp','cVille','fSignataire','fNotes','fObjet','fDelai']
     .forEach(function(id){ $(id).value=''; });
   $('fObjet').value = '';
   $('fEnvoi').checked = false;

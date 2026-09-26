@@ -137,7 +137,7 @@ var ENTETES_DEVIS_ = [
   'CONTACT', 'TELEPHONE', 'EMAIL', 'ADRESSE', 'CP', 'VILLE',
   'TOTAL_HT_PONCTUEL', 'TOTAL_HT_MENSUEL', 'TOTAL_HT', 'TOTAL_TVA', 'TOTAL_TTC',
   'REMISE_PCT', 'STATUT', 'SIGNE', 'SIGNATAIRE', 'VALIDITE', 'LIEN_PDF', 'PHOTOS', 'NOTES',
-  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS', 'OBJET', 'LOGEMENT_PLUS_2_ANS', 'TAUX_TVA'
+  'RECU_LE', 'ID_APPAREIL', 'ID_DEVIS', 'OBJET', 'LOGEMENT_PLUS_2_ANS', 'TAUX_TVA', 'DELAI'
 ];
 
 var ENTETES_LIGNES_ = [
@@ -202,7 +202,8 @@ function majStructure_() {
     // Volontairement limité à cette liste, pour ne jamais réécrire un texte vidé exprès.
     var aRemplir = ['societe_tel', 'societe_email', 'societe_site', 'societe_capital',
                     'banque_nom', 'banque_iban', 'banque_bic', 'conditions_paiement',
-                    'paiement_pct', 'clause_reserve', 'mentions_penalites'];
+                    'paiement_pct', 'clause_reserve', 'mentions_penalites',
+                    'mention_manuscrite', 'bordereau_retractation'];
     REGLAGES_DEFAUT_.forEach(function (r) {
       if (aRemplir.indexOf(r[0]) < 0) return;
       if (String(reg[r[0]] === undefined ? '' : reg[r[0]]).trim() !== '') return;
@@ -239,6 +240,10 @@ var REGLAGES_DEFAUT_ = [
   ['clause_reserve', 'CLAUSE DE RÉSERVE DE PROPRIÉTÉ : Conformément à la loi 80.335 du 12 mai 1980, nous réservons la propriété des produits et marchandises, objets des présents débits, jusqu\'au paiement de l\'intégralité du prix et de ses accessoires. En cas de non paiement total ou partiel du prix de l\'échéance pour quelque cause que ce soit, de convention expresse, nous nous réservons la faculté, sans formalités, de reprendre matériellement possession de ces produits ou marchandises à vos frais, risques et périls.', 'Bas de page'],
   ['mentions_penalites', 'Pénalité de retard : 3 fois le taux d\'intérêt légal après date d\'échéance. Escompte pour règlement anticipé : 0 % (sauf condition particulière définie dans les conditions de règlement). Le montant de l\'indemnité forfaitaire pour frais de recouvrement prévue au douzième alinéa de l\'article L441-6 est fixé à 40 euros en matière commerciale.', 'Bas de page'],
   ['mentions_credit_impot', '', 'Crédit d\'impôt services à la personne — à ne remplir qu\'une fois la déclaration SAP obtenue'],
+  ['assurance_rc', '', 'Assurance responsabilité civile professionnelle : assureur, adresse, couverture géographique'],
+  ['mediateur', '', 'Médiateur de la consommation : nom, adresse et site — obligatoire face à un particulier'],
+  ['mention_manuscrite', 'Bon pour accord', 'Mention que le client recopie avant de signer'],
+  ['bordereau_retractation', 'OUI', 'Formulaire de rétractation en dernière page des devis aux particuliers'],
   ['sel_codes', '', 'Généré automatiquement — ne pas modifier']
 ];
 
@@ -462,7 +467,8 @@ function enregistrer_(d, com) {
     RECU_LE: new Date(), ID_APPAREIL: d.appareil || '', ID_DEVIS: d.id || '',
     OBJET: devis.objet || '',
     LOGEMENT_PLUS_2_ANS: (c.plus2ans === true ? 'OUI' : (c.plus2ans === false ? 'NON' : '')),
-    TAUX_TVA: tauxPrincipal_(devis)
+    TAUX_TVA: tauxPrincipal_(devis),
+    DELAI: devis.delai || ''
   };
   shD.appendRow(en.map(function (h) { return v.hasOwnProperty(h) ? v[h] : ''; }));
 
